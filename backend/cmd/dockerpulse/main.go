@@ -28,7 +28,7 @@ func main() {
 	case "agent":
 		runAgent()
 	case "version":
-		fmt.Println("DockPulse v1.0.0")
+		fmt.Println("DockerPulse v1.0.0")
 	default:
 		printUsage()
 		os.Exit(1)
@@ -36,14 +36,14 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println(`DockPulse - Multi-Server Docker & Compose Fleet Manager
+	fmt.Println(`DockerPulse - Multi-Server Docker & Compose Fleet Manager
 
 Usage:
-  dockmgr <command> [arguments]
+  dockerpulse <command> [arguments]
 
 Commands:
-  server    Start the DockPulse central management server & web dashboard
-  agent     Start the lightweight DockPulse agent on a remote Docker host
+  server    Start the DockerPulse central management server & web dashboard
+  agent     Start the lightweight DockerPulse agent on a remote Docker host
   version   Show version information`)
 }
 

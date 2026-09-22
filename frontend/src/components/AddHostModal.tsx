@@ -50,12 +50,12 @@ export const AddHostModal: React.FC<AddHostModalProps> = ({ onClose, onAdded }) 
   };
 
   const agentRunSnippet = `docker run -d \\
-  --name dockpulse-agent \\
+  --name dockerpulse-agent \\
   --restart unless-stopped \\
   -v /var/run/docker.sock:/var/run/docker.sock \\
   -v ${baseDir.replace('~', '$HOME')}:/stacks \\
-  dockpulse/dockmgr:latest \\
-  dockmgr agent --server ws://${window.location.host}/ws/agent --token YOUR_TOKEN --host-id HOST_ID`;
+  dockerpulse/dockerpulse:latest \\
+  dockerpulse agent --server ws://${window.location.host}/ws/agent --token YOUR_TOKEN --host-id HOST_ID`;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
@@ -92,7 +92,7 @@ export const AddHostModal: React.FC<AddHostModalProps> = ({ onClose, onAdded }) 
                 }`}
               >
                 <div className="flex items-center gap-1.5 font-semibold text-xs text-slate-200">
-                  <Cpu className="w-4 h-4 text-sky-400" /> DockPulse Agent
+                  <Cpu className="w-4 h-4 text-sky-400" /> DockerPulse Agent
                 </div>
                 <span className="text-[11px] text-slate-500">
                   Lightweight container on node, low-latency live streams.

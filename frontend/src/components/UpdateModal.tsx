@@ -25,7 +25,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setOutput(`[DockPulse] Initiating action '${action}' on stack '${stackName}'...\n`);
+    setOutput(`[DockerPulse] Initiating action '${action}' on stack '${stackName}'...\n`);
     setStatus('running');
 
     api.streamComposeAction(

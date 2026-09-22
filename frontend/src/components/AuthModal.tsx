@@ -50,7 +50,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isSetup, onSuccess }) => {
             <ShieldCheck className="h-6 w-6" />
           </div>
           <h2 className="text-xl font-bold text-slate-100">
-            {isSetup ? 'Welcome to DockPulse' : 'Sign in to DockPulse'}
+            {isSetup ? 'Welcome to DockerPulse' : 'Sign in to DockerPulse'}
           </h2>
           <p className="text-xs text-slate-400 mt-1">
             {isSetup
@@ -119,7 +119,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isSetup, onSuccess }) => {
             disabled={loading}
             className="w-full rounded-lg bg-sky-600 hover:bg-sky-500 py-2.5 text-xs font-semibold text-white shadow-lg shadow-sky-600/20 transition-all mt-2"
           >
-            {loading ? 'Authenticating...' : isSetup ? 'Initialize DockPulse' : 'Sign In'}
+            {loading ? 'Authenticating...' : isSetup ? 'Initialize DockerPulse' : 'Sign In'}
           </button>
         </form>
       </div>

@@ -191,7 +191,7 @@ export const App: React.FC = () => {
             </div>
             <div>
               <h1 className="text-base font-bold text-slate-100 flex items-center gap-2">
-                DockPulse
+                DockerPulse
                 <span className="text-[10px] uppercase font-mono px-1.5 py-0.2 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">
                   Fleet
                 </span>

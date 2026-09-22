@@ -1,18 +1,18 @@
-# DockPulse (DockMgr)
+# DockerPulse
 
 > **Multi-Server Docker & Compose Fleet Manager with Native Host Directory Support**
 
-DockPulse is a high-performance, lightweight fleet management dashboard for Docker environments. It was engineered specifically to solve Portainer's limitations around custom host directory structures (like `~/docker/<stack>/docker-compose.yml`), making multi-server Docker ops effortless without needing to constantly SSH into your Linux nodes.
+DockerPulse is a high-performance, lightweight fleet management dashboard for Docker environments. It was engineered specifically to solve Portainer's limitations around custom host directory structures (like `~/docker/<stack>/docker-compose.yml`), making multi-server Docker ops effortless without needing to constantly SSH into your Linux nodes.
 
 ---
 
-## 🌟 Why DockPulse?
+## 🌟 Why DockerPulse?
 
-- **Native Host Directory Tracking**: Portainer forces stacks into its internal storage. DockPulse directly monitors and respects your server's native directories (e.g. `~/docker/nextcloud/docker-compose.yml`).
+- **Native Host Directory Tracking**: Portainer forces stacks into its internal storage. DockerPulse directly monitors and respects your server's native directories (e.g. `~/docker/nextcloud/docker-compose.yml`).
 - **1-Click Push-Button Updates**: Registry digest comparison detects image updates remotely. Click **"Pull & Up"** to execute `docker compose pull && docker compose up -d` with a real-time streaming terminal drawer.
 - **In-Browser Compose & .env Editor**: Edit `docker-compose.yml` and `.env` in the browser with **automatic revision snapshots** prior to every save—enabling 1-click rollback if a configuration breaks.
 - **Tri-Mode Connection Drivers**:
-  1. **DockPulse Agent**: Minimal agent container on remote nodes communicating over secure, persistent WebSockets.
+  1. **DockerPulse Agent**: Minimal agent container on remote nodes communicating over secure, persistent WebSockets.
   2. **Direct SSH**: Zero-install management using OpenSSH keypairs.
   3. **Docker Socket / TLS**: Direct TCP or unix socket connectivity.
 - **Live Observability**: Live log streaming with follow (`-f`), regex search, tail limits, and interactive container terminal PTY shell (`xterm.js`).
@@ -23,15 +23,15 @@ DockPulse is a high-performance, lightweight fleet management dashboard for Dock
 
 ## 🚀 Quick Start
 
-### 1. Run DockPulse Central Server
+### 1. Run DockerPulse Central Server
 
 Run with Docker Compose:
 
 ```yaml
 services:
-  dockpulse:
-    image: dockpulse/dockmgr:latest
-    container_name: dockpulse
+  dockerpulse:
+    image: dockerpulse/dockerpulse:latest
+    container_name: dockerpulse
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -43,7 +43,7 @@ services:
       - PORT=8080
       - DATA_DIR=/data
       - JWT_SECRET=change_to_a_secure_random_key
-      - AGENT_SECRET=dockpulse_agent_shared_token
+      - AGENT_SECRET=dockerpulse_agent_shared_token
       - PROXY_AUTH_HEADER=Remote-User # Optional for Authelia/Authentik
 ```
 
@@ -62,26 +62,26 @@ On your remote Linux host, deploy `docker-compose.agent.yml`:
 
 ```yaml
 services:
-  dockpulse-agent:
-    image: dockpulse/dockmgr:latest
-    container_name: dockpulse-agent
+  dockerpulse-agent:
+    image: dockerpulse/dockerpulse:latest
+    container_name: dockerpulse-agent
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME}/docker:/root/docker
     command: >
-      dockmgr agent
+      dockerpulse agent
       --server ws://manager-ip:8080/ws/agent
-      --token dockpulse_agent_shared_token
+      --token dockerpulse_agent_shared_token
       --host-id node-1
       --base-dir /root/docker
 ```
 
 #### Option B: Direct SSH
-In the DockPulse web dashboard:
+In the DockerPulse web dashboard:
 1. Click **Add Server** -> **Direct SSH**.
 2. Enter the host IP, SSH port, user, and paste your SSH Private Key.
-3. DockPulse will immediately connect and scan `~/docker` for stacks.
+3. DockerPulse will immediately connect and scan `~/docker` for stacks.
 
 ---
 
@@ -90,7 +90,7 @@ In the DockPulse web dashboard:
 ```
 docker_mgr/
 ├── backend/
-│   ├── cmd/dockmgr/main.go          # Single CLI binary: server or agent
+│   ├── cmd/dockerpulse/main.go      # Single CLI binary: server or agent
 │   ├── internal/
 │   │   ├── api/                     # REST, WebSockets, streaming handlers
 │   │   ├── auth/                    # JWT, bcrypt, reverse proxy header SSO

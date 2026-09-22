@@ -27,7 +27,7 @@ COPY backend/ ./
 COPY --from=frontend-builder /app/frontend/dist ./internal/api/dist
 
 # Build single static binary
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /dockmgr ./cmd/dockmgr
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /dockerpulse ./cmd/dockerpulse
 
 # ==========================================
 # Stage 3: Minimal Production Image
@@ -45,7 +45,7 @@ RUN apk add --no-cache \
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=backend-builder /dockmgr /usr/local/bin/dockmgr
+COPY --from=backend-builder /dockerpulse /usr/local/bin/dockerpulse
 
 # Default data directory
 RUN mkdir -p /data /root/docker
@@ -55,5 +55,5 @@ ENV DATA_DIR=/data
 
 EXPOSE 8080
 
-ENTRYPOINT ["dockmgr"]
+ENTRYPOINT ["dockerpulse"]
 CMD ["server", "--port", "8080", "--data-dir", "/data"]
