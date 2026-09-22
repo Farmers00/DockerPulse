@@ -125,9 +125,18 @@ export const App: React.FC = () => {
     setLoading(true);
     try {
       const [cList, sList, sys] = await Promise.all([
-        api.listContainers(selectedHostId).catch(() => []),
-        api.listStacks(selectedHostId).catch(() => []),
-        api.getHostSystem(selectedHostId).catch(() => null),
+        api.listContainers(selectedHostId).catch((err) => {
+          console.error('Failed to list containers:', err);
+          return [];
+        }),
+        api.listStacks(selectedHostId).catch((err) => {
+          console.error('Failed to list stacks:', err);
+          return [];
+        }),
+        api.getHostSystem(selectedHostId).catch((err) => {
+          console.error('Failed to get host system:', err);
+          return null;
+        }),
       ]);
       setContainers(Array.isArray(cList) ? cList : []);
       setStacks(Array.isArray(sList) ? sList : []);

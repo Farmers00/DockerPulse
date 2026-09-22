@@ -21,7 +21,7 @@ func (s *Server) handleListContainers(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 6*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 	defer cancel()
 
 	d, err := s.GetDriver(ctx, host)

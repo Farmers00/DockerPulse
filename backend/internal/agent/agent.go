@@ -112,10 +112,13 @@ func (a *Agent) handleMessage(ctx context.Context, msg driver.AgentMessage) {
 		a.sendReply(reply)
 
 	case "list_containers":
+		log.Printf("[DockPulse Agent] Received list_containers request")
 		list, err := a.driver.ListContainers(ctx)
 		if err != nil {
+			log.Printf("[DockPulse Agent] ListContainers error: %v", err)
 			reply.Error = err.Error()
 		} else {
+			log.Printf("[DockPulse Agent] ListContainers returned %d containers", len(list))
 			reply.Payload, _ = json.Marshal(list)
 		}
 		a.sendReply(reply)

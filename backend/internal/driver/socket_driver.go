@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -101,13 +102,25 @@ func (d *SocketDriver) ListContainers(ctx context.Context) ([]ContainerInfo, err
 			})
 		}
 
-		// Quick stats if running
-		if c.State == "running" {
-			d.populateContainerStats(ctx, c.ID, &info)
-		}
-
 		result = append(result, info)
 	}
+
+	// Fetch quick stats in parallel for running containers with a 1.5s overall cap
+	var wg sync.WaitGroup
+	statsCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+
+	for i := range result {
+		if result[i].State == "running" {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				d.populateContainerStats(statsCtx, result[idx].ID, &result[idx])
+			}(i)
+		}
+	}
+	wg.Wait()
+
 	return result, nil
 }
 
