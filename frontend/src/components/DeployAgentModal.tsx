@@ -69,7 +69,28 @@ export const DeployAgentModal: React.FC<DeployAgentModalProps> = ({ onClose, hos
     }
   };
 
-  const curlInstallerCmd = `curl -fsSL "${protocol}//${serverHost}/install-agent.sh?id=${nodeName}&token=${agentToken}" | sudo bash`;
+  const curlInstallerCmd = `curl -fsSL "${protocol}//${serverHost}/install-agent.sh?id=${nodeName}&token=${agentToken}" | bash`;
+
+  const wsURL = `${protocol === 'https:' ? 'wss:' : 'ws:'}//${serverHost}/ws/agent`;
+
+  const composeSnippet = `mkdir -p ~/docker/dockerpulse-agent && cd ~/docker/dockerpulse-agent
+cat << 'EOF' > docker-compose.yml
+services:
+  dockerpulse-agent:
+    image: ghcr.io/farmers00/dockerpulse:latest
+    container_name: dockerpulse-agent
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - \${HOME}/docker:/root/docker
+    command: >
+      dockerpulse agent
+      --server ${wsURL}
+      --token ${agentToken}
+      --host-id ${nodeName}
+      --base-dir /root/docker
+EOF
+docker compose up -d`;
 
   const gitCloneCmd = `git clone https://github.com/Farmers00/DockerPulse.git ~/docker/dockerpulse-agent
 cd ~/docker/dockerpulse-agent
@@ -133,7 +154,19 @@ docker compose -f deploy/docker-compose.agent.yml up -d --build`;
                 }`}
               >
                 <Terminal className="w-3.5 h-3.5" />
-                1-Line Installer (Fastest &bull; Systemd)
+                1-Line Command (Docker Container)
+              </button>
+
+              <button
+                onClick={() => setActiveTab('compose')}
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                  activeTab === 'compose'
+                    ? 'bg-sky-500/10 text-sky-400 border border-sky-500/30'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <FileCode className="w-3.5 h-3.5" />
+                Manual docker-compose.yml
               </button>
 
               <button
@@ -145,7 +178,7 @@ docker compose -f deploy/docker-compose.agent.yml up -d --build`;
                 }`}
               >
                 <GitBranch className="w-3.5 h-3.5" />
-                Docker Compose (Git Build)
+                Git Clone & Build
               </button>
             </div>
 
@@ -153,7 +186,7 @@ docker compose -f deploy/docker-compose.agent.yml up -d --build`;
             {activeTab === 'curl' && (
               <div className="space-y-3">
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Log into your remote Linux server and paste this command. It downloads the agent binary directly from this DockerPulse server and creates an auto-restarting systemd service:
+                  Log into your remote Linux host and run this single command. It creates <code className="text-sky-300">~/docker/dockerpulse-agent/</code> and starts the DockerPulse agent container:
                 </p>
                 <div className="relative rounded-lg bg-slate-950 p-4 font-mono text-xs text-sky-300 border border-slate-800 break-all leading-relaxed">
                   {curlInstallerCmd}
@@ -166,25 +199,44 @@ docker compose -f deploy/docker-compose.agent.yml up -d --build`;
                   </button>
                 </div>
                 <p className="text-[11px] text-slate-500 font-mono">
-                  * Connects over WebSocket to manage local containers and stacks in ~/docker
+                  * Container connects over WebSocket to manage containers & compose stacks in ~/docker
                 </p>
               </div>
             )}
 
-            {/* Method 2: Git Clone & Build */}
-            {activeTab === 'git' && (
+            {/* Method 2: Manual Compose */}
+            {activeTab === 'compose' && (
               <div className="space-y-3">
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  If you prefer running the agent inside a Docker container, clone the repo and build the agent container locally:
+                  Paste this into your remote host's terminal to create the stack and start the container:
                 </p>
                 <div className="relative rounded-lg bg-slate-950 p-4 font-mono text-xs text-sky-300 border border-slate-800 whitespace-pre-wrap leading-relaxed">
-                  {gitCloneCmd}
+                  {composeSnippet}
                   <button
-                    onClick={() => copyText(gitCloneCmd, 2)}
+                    onClick={() => copyText(composeSnippet, 2)}
                     className="absolute right-2.5 top-2.5 flex items-center gap-1 rounded bg-slate-800 hover:bg-slate-700 px-2.5 py-1 text-xs text-slate-200 transition-colors"
                   >
                     {copiedIndex === 2 ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                     {copiedIndex === 2 ? 'Copied!' : 'Copy'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Method 3: Git Clone & Build */}
+            {activeTab === 'git' && (
+              <div className="space-y-3">
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Clone the repository and build the container locally from source:
+                </p>
+                <div className="relative rounded-lg bg-slate-950 p-4 font-mono text-xs text-sky-300 border border-slate-800 whitespace-pre-wrap leading-relaxed">
+                  {gitCloneCmd}
+                  <button
+                    onClick={() => copyText(gitCloneCmd, 3)}
+                    className="absolute right-2.5 top-2.5 flex items-center gap-1 rounded bg-slate-800 hover:bg-slate-700 px-2.5 py-1 text-xs text-slate-200 transition-colors"
+                  >
+                    {copiedIndex === 3 ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    {copiedIndex === 3 ? 'Copied!' : 'Copy'}
                   </button>
                 </div>
               </div>

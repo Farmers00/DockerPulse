@@ -3,7 +3,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    image: dockerpulse/dockerpulse:latest
+    image: ghcr.io/farmers00/dockerpulse:latest
     container_name: dockerpulse
     restart: unless-stopped
     ports:

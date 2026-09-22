@@ -1,9 +1,6 @@
 services:
   dockerpulse-agent:
-    image: dockerpulse-agent:local
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+    image: ghcr.io/farmers00/dockerpulse:latest
     container_name: dockerpulse-agent
     restart: unless-stopped
     volumes:
