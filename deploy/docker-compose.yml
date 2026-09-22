@@ -1,8 +1,5 @@
 services:
   dockerpulse:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
     image: ghcr.io/farmers00/dockerpulse:latest
     container_name: dockerpulse
     restart: unless-stopped
