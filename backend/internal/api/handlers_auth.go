@@ -1,0 +1,116 @@
+package api
+
+import (
+	"net/http"
+
+	"github.com/dockpulse/dockmgr/internal/auth"
+	"github.com/dockpulse/dockmgr/internal/database"
+	"github.com/gin-gonic/gin"
+)
+
+func (s *Server) handleAuthStatus(c *gin.Context) {
+	count, err := s.db.CountUsers()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"initialized": count > 0,
+	})
+}
+
+func (s *Server) handleSetup(c *gin.Context) {
+	count, err := s.db.CountUsers()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+	if count > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Application is already initialized"})
+		return
+	}
+
+	var req struct {
+		Username string `json:"username" binding:"required"`
+		Password string `json:"password" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Username and password required"})
+		return
+	}
+
+	hash, err := auth.HashPassword(req.Password)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+		return
+	}
+
+	user := &database.User{
+		Username:     req.Username,
+		PasswordHash: hash,
+		Role:         database.RoleAdmin,
+	}
+
+	if err := s.db.CreateUser(user); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
+		return
+	}
+
+	token, _ := auth.GenerateToken(user, s.cfg.JWTSecret)
+	c.SetCookie("dockpulse_token", token, 60*60*24*7, "/", "", false, true)
+
+	c.JSON(http.StatusOK, gin.H{
+		"token": token,
+		"user": gin.H{
+			"id":       user.ID,
+			"username": user.Username,
+			"role":     user.Role,
+		},
+	})
+}
+
+func (s *Server) handleLogin(c *gin.Context) {
+	var req struct {
+		Username string `json:"username" binding:"required"`
+		Password string `json:"password" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	user, err := s.db.GetUserByUsername(req.Username)
+	if err != nil || !auth.CheckPassword(req.Password, user.PasswordHash) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
+		return
+	}
+
+	token, err := auth.GenerateToken(user, s.cfg.JWTSecret)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to sign token"})
+		return
+	}
+
+	c.SetCookie("dockpulse_token", token, 60*60*24*7, "/", "", false, true)
+
+	c.JSON(http.StatusOK, gin.H{
+		"token": token,
+		"user": gin.H{
+			"id":       user.ID,
+			"username": user.Username,
+			"role":     user.Role,
+		},
+	})
+}
+
+func (s *Server) handleMe(c *gin.Context) {
+	username, _ := c.Get("username")
+	role, _ := c.Get("role")
+	userID, _ := c.Get("user_id")
+
+	c.JSON(http.StatusOK, gin.H{
+		"user_id":  userID,
+		"username": username,
+		"role":     role,
+	})
+}

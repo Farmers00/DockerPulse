@@ -1,0 +1,16 @@
+services:
+  dockpulse-agent:
+    image: dockpulse/dockmgr:latest
+    container_name: dockpulse-agent
+    restart: unless-stopped
+    volumes:
+      # Docker socket for container control
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Host compose directory to manage (~/docker on host)
+      - ${HOME}/docker:/root/docker
+    command: >
+      dockmgr agent
+      --server ws://manager-ip-or-domain:8080/ws/agent
+      --token dockpulse_agent_shared_join_token_2026
+      --host-id node-1
+      --base-dir /root/docker

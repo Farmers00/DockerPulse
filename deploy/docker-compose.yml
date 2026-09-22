@@ -1,0 +1,25 @@
+services:
+  dockpulse:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: dockpulse/dockmgr:latest
+    container_name: dockpulse
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # Data directory for SQLite database and state
+      - ./data:/data
+      # Mount local Docker socket to manage this host directly
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount your host's docker compose directory (e.g. ~/docker)
+      - ${HOME}/docker:/root/docker
+    environment:
+      - PORT=8080
+      - DATA_DIR=/data
+      - JWT_SECRET=change_me_to_a_secure_random_string_in_production
+      - AGENT_SECRET=dockpulse_agent_shared_join_token_2026
+      # Reverse proxy SSO headers (Authelia, Authentik, Cloudflare Access)
+      - PROXY_AUTH_HEADER=Remote-User
+      - PROXY_EMAIL_HEADER=Remote-Email

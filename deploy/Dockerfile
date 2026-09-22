@@ -1,0 +1,59 @@
+# ==========================================
+# Stage 1: Build Frontend Assets
+# ==========================================
+FROM node:22-alpine AS frontend-builder
+WORKDIR /app/frontend
+
+COPY frontend/package*.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
+# ==========================================
+# Stage 2: Build Go Binary with Embedded UI
+# ==========================================
+FROM golang:1.22-alpine AS backend-builder
+WORKDIR /app/backend
+
+# Install build dependencies
+RUN apk add --no-cache git ca-certificates
+
+COPY backend/go.* ./
+RUN go mod download
+
+COPY backend/ ./
+# Copy built frontend dist into backend internal static embed dir
+COPY --from=frontend-builder /app/frontend/dist ./internal/api/dist
+
+# Build single static binary
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /dockmgr ./cmd/dockmgr
+
+# ==========================================
+# Stage 3: Minimal Production Image
+# ==========================================
+FROM alpine:3.20
+
+# Install Docker CLI, Docker Compose plugin, and ca-certificates
+RUN apk add --no-cache \
+    docker-cli \
+    docker-cli-compose \
+    ca-certificates \
+    tzdata \
+    bash
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=backend-builder /dockmgr /usr/local/bin/dockmgr
+
+# Default data directory
+RUN mkdir -p /data /root/docker
+
+ENV PORT=8080
+ENV DATA_DIR=/data
+
+EXPOSE 8080
+
+ENTRYPOINT ["dockmgr"]
+CMD ["server", "--port", "8080", "--data-dir", "/data"]
