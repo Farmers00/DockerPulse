@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -283,6 +284,24 @@ func (s *Server) handleGetAgentToken(c *gin.Context) {
 	})
 }
 
+func (s *Server) handleDownloadBinary(c *gin.Context) {
+	exePath, err := os.Executable()
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to resolve binary path: %v", err)
+		return
+	}
+
+	// Verify file exists
+	if _, err := os.Stat(exePath); err != nil {
+		c.String(http.StatusNotFound, "Binary file not found on server")
+		return
+	}
+
+	c.Header("Content-Disposition", "attachment; filename=dockerpulse")
+	c.Header("Content-Type", "application/octet-stream")
+	c.File(exePath)
+}
+
 func (s *Server) handleInstallAgentScript(c *gin.Context) {
 	host := c.Request.Host
 	scheme := "ws"
@@ -307,7 +326,7 @@ echo "======================================================"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "[Error] Docker is not installed on this host."
-  echo "Please install Docker and Docker Compose before running this installer."
+  echo "Please install Docker before running this installer."
   exit 1
 fi
 
@@ -315,39 +334,85 @@ HOST_ID="%s"
 TOKEN="%s"
 WS_URL="%s"
 SERVER_URL="%s"
-TARGET_DIR="$HOME/docker/dockerpulse-agent"
 
-echo "[DockerPulse] Setting up agent directory: $TARGET_DIR"
-mkdir -p "$TARGET_DIR"
-cd "$TARGET_DIR"
+ACTUAL_USER="$USER"
+if [ "$EUID" -eq 0 ] && [ -n "$SUDO_USER" ]; then
+  ACTUAL_USER="$SUDO_USER"
+fi
+USER_HOME=$(getent passwd "$ACTUAL_USER" 2>/dev/null | cut -d: -f6)
+if [ -z "$USER_HOME" ]; then
+  USER_HOME="$HOME"
+fi
+BASE_DIR="$USER_HOME/docker"
 
-echo "[DockerPulse] Writing docker-compose.yml..."
-cat << 'EOF' > docker-compose.yml
-services:
-  dockerpulse-agent:
-    image: dockerpulse/dockerpulse:latest
-    container_name: dockerpulse-agent
-    restart: unless-stopped
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ${HOME}/docker:/root/docker
-    command: >
-      dockerpulse agent
-      --server %s
-      --token %s
-      --host-id %s
-      --base-dir /root/docker
+echo "[DockerPulse] Host ID:     $HOST_ID"
+echo "[DockerPulse] Server URL:  $SERVER_URL"
+echo "[DockerPulse] Base Dir:    $BASE_DIR"
+
+mkdir -p "$BASE_DIR"
+
+echo "[DockerPulse] Downloading agent binary from $SERVER_URL/download/dockerpulse..."
+TEMP_BIN=$(mktemp)
+if ! curl -fsSL "$SERVER_URL/download/dockerpulse" -o "$TEMP_BIN"; then
+  echo "[Error] Failed to download agent binary from DockerPulse server."
+  rm -f "$TEMP_BIN"
+  exit 1
+fi
+chmod +x "$TEMP_BIN"
+
+INSTALL_BIN="/usr/local/bin/dockerpulse"
+SUDO=""
+if [ "$EUID" -ne 0 ]; then
+  if command -v sudo >/dev/null 2>&1; then
+    SUDO="sudo"
+  else
+    INSTALL_BIN="$USER_HOME/.local/bin/dockerpulse"
+    mkdir -p "$USER_HOME/.local/bin"
+  fi
+fi
+
+echo "[DockerPulse] Installing binary to $INSTALL_BIN..."
+$SUDO mv "$TEMP_BIN" "$INSTALL_BIN"
+$SUDO chmod 755 "$INSTALL_BIN"
+
+# Configure systemd service if available
+if command -v systemctl >/dev/null 2>&1 && [ -d /etc/systemd/system ]; then
+  echo "[DockerPulse] Setting up systemd service: dockerpulse-agent.service..."
+  SERVICE_FILE="/tmp/dockerpulse-agent.service"
+  cat << EOF > "$SERVICE_FILE"
+[Unit]
+Description=DockerPulse Remote Agent
+After=docker.service network.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=$INSTALL_BIN agent --server $WS_URL --token $TOKEN --host-id $HOST_ID --base-dir $BASE_DIR
+Restart=always
+RestartSec=5s
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
-echo "[DockerPulse] Starting DockerPulse agent..."
-docker compose up -d
+  $SUDO mv "$SERVICE_FILE" /etc/systemd/system/dockerpulse-agent.service
+  $SUDO systemctl daemon-reload
+  $SUDO systemctl enable --now dockerpulse-agent
+  echo "[DockerPulse] Agent service started successfully via systemd!"
+else
+  echo "[DockerPulse] Starting agent in background..."
+  nohup $INSTALL_BIN agent --server "$WS_URL" --token "$TOKEN" --host-id "$HOST_ID" --base-dir "$BASE_DIR" > "$USER_HOME/dockerpulse-agent.log" 2>&1 &
+  echo "[DockerPulse] Agent running in background (PID $!)"
+fi
 
 echo ""
 echo "======================================================"
 echo " DockerPulse Agent is now running!"
-echo " Host '%s' registered with: $SERVER_URL"
+echo " Host '$HOST_ID' connected to $SERVER_URL"
 echo "======================================================"
-`, hostID, token, wsURL, serverURL, wsURL, token, hostID, hostID)
+`, hostID, token, wsURL, serverURL, hostID)
 
 	c.Header("Content-Type", "text/x-shellscript; charset=utf-8")
 	c.String(http.StatusOK, script)
@@ -366,7 +431,10 @@ func (s *Server) handleAgentComposeTemplate(c *gin.Context) {
 
 	template := fmt.Sprintf(`services:
   dockerpulse-agent:
-    image: dockerpulse/dockerpulse:latest
+    image: dockerpulse-agent:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     container_name: dockerpulse-agent
     restart: unless-stopped
     volumes:

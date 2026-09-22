@@ -35,20 +35,45 @@ export const DeployAgentModal: React.FC<DeployAgentModalProps> = ({ onClose, hos
   }, []);
 
   const copyText = (text: string, idx: number) => {
-    navigator.clipboard.writeText(text);
-    setCopiedIndex(idx);
-    setTimeout(() => setCopiedIndex(null), 2000);
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard
+        .writeText(text)
+        .then(() => {
+          setCopiedIndex(idx);
+          setTimeout(() => setCopiedIndex(null), 2000);
+        })
+        .catch(() => {
+          fallbackCopy(text, idx);
+        });
+    } else {
+      fallbackCopy(text, idx);
+    }
   };
 
-  const curlInstallerCmd = `curl -fsSL "${protocol}//${serverHost}/install-agent.sh?id=${nodeName}&token=${agentToken}" | bash`;
+  const fallbackCopy = (text: string, idx: number) => {
+    try {
+      const textArea = document.createElement('textarea');
+      textArea.value = text;
+      textArea.style.position = 'fixed';
+      textArea.style.left = '-999999px';
+      textArea.style.top = '-999999px';
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      setCopiedIndex(idx);
+      setTimeout(() => setCopiedIndex(null), 2000);
+    } catch (err) {
+      console.error('Fallback copy failed', err);
+    }
+  };
 
-  const curlComposeCmd = `mkdir -p ~/docker/dockerpulse-agent && cd ~/docker/dockerpulse-agent
-curl -fsSL "${protocol}//${serverHost}/docker-compose.agent.yml?id=${nodeName}&token=${agentToken}" -o docker-compose.yml
-docker compose up -d`;
+  const curlInstallerCmd = `curl -fsSL "${protocol}//${serverHost}/install-agent.sh?id=${nodeName}&token=${agentToken}" | sudo bash`;
 
-  const gitCloneCmd = `git clone https://github.com/Farmers00/DockerPulse.git ~/docker/dockerpulse
-cd ~/docker/dockerpulse/deploy
-docker compose -f docker-compose.agent.yml up -d`;
+  const gitCloneCmd = `git clone https://github.com/Farmers00/DockerPulse.git ~/docker/dockerpulse-agent
+cd ~/docker/dockerpulse-agent
+docker compose -f deploy/docker-compose.agent.yml up -d --build`;
 
   const isConnected = hosts.some(
     (h) => h.id === nodeName || h.name.toLowerCase() === nodeName.toLowerCase()
@@ -108,19 +133,7 @@ docker compose -f docker-compose.agent.yml up -d`;
                 }`}
               >
                 <Terminal className="w-3.5 h-3.5" />
-                1-Line Curl Script (Fastest)
-              </button>
-
-              <button
-                onClick={() => setActiveTab('compose')}
-                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                  activeTab === 'compose'
-                    ? 'bg-sky-500/10 text-sky-400 border border-sky-500/30'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                <FileCode className="w-3.5 h-3.5" />
-                Docker Compose Download
+                1-Line Installer (Fastest &bull; Systemd)
               </button>
 
               <button
@@ -132,15 +145,15 @@ docker compose -f docker-compose.agent.yml up -d`;
                 }`}
               >
                 <GitBranch className="w-3.5 h-3.5" />
-                Git Clone
+                Docker Compose (Git Build)
               </button>
             </div>
 
             {/* Method 1: 1-Line Curl */}
             {activeTab === 'curl' && (
               <div className="space-y-3">
-                <p className="text-xs text-slate-400">
-                  Log into your remote Linux server and paste this single command. It will download the agent compose setup, mount <code className="text-sky-300">~/docker</code>, and start the agent automatically:
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Log into your remote Linux server and paste this command. It downloads the agent binary directly from this DockerPulse server and creates an auto-restarting systemd service:
                 </p>
                 <div className="relative rounded-lg bg-slate-950 p-4 font-mono text-xs text-sky-300 border border-slate-800 break-all leading-relaxed">
                   {curlInstallerCmd}
@@ -152,42 +165,26 @@ docker compose -f docker-compose.agent.yml up -d`;
                     {copiedIndex === 1 ? 'Copied!' : 'Copy'}
                   </button>
                 </div>
-              </div>
-            )}
-
-            {/* Method 2: Compose Download */}
-            {activeTab === 'compose' && (
-              <div className="space-y-3">
-                <p className="text-xs text-slate-400">
-                  Downloads the pre-configured <code className="text-sky-300">docker-compose.yml</code> file into <code className="text-sky-300">~/docker/dockerpulse-agent/</code> and starts it:
+                <p className="text-[11px] text-slate-500 font-mono">
+                  * Connects over WebSocket to manage local containers and stacks in ~/docker
                 </p>
-                <div className="relative rounded-lg bg-slate-950 p-4 font-mono text-xs text-sky-300 border border-slate-800 whitespace-pre-wrap leading-relaxed">
-                  {curlComposeCmd}
-                  <button
-                    onClick={() => copyText(curlComposeCmd, 2)}
-                    className="absolute right-2.5 top-2.5 flex items-center gap-1 rounded bg-slate-800 hover:bg-slate-700 px-2.5 py-1 text-xs text-slate-200 transition-colors"
-                  >
-                    {copiedIndex === 2 ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    {copiedIndex === 2 ? 'Copied!' : 'Copy'}
-                  </button>
-                </div>
               </div>
             )}
 
-            {/* Method 3: Git Clone */}
+            {/* Method 2: Git Clone & Build */}
             {activeTab === 'git' && (
               <div className="space-y-3">
-                <p className="text-xs text-slate-400">
-                  Clone your private repository directly onto the remote host and run the agent compose file:
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  If you prefer running the agent inside a Docker container, clone the repo and build the agent container locally:
                 </p>
                 <div className="relative rounded-lg bg-slate-950 p-4 font-mono text-xs text-sky-300 border border-slate-800 whitespace-pre-wrap leading-relaxed">
                   {gitCloneCmd}
                   <button
-                    onClick={() => copyText(gitCloneCmd, 3)}
+                    onClick={() => copyText(gitCloneCmd, 2)}
                     className="absolute right-2.5 top-2.5 flex items-center gap-1 rounded bg-slate-800 hover:bg-slate-700 px-2.5 py-1 text-xs text-slate-200 transition-colors"
                   >
-                    {copiedIndex === 3 ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    {copiedIndex === 3 ? 'Copied!' : 'Copy'}
+                    {copiedIndex === 2 ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    {copiedIndex === 2 ? 'Copied!' : 'Copy'}
                   </button>
                 </div>
               </div>
