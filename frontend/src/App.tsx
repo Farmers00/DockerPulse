@@ -733,6 +733,8 @@ export const App: React.FC = () => {
         <DeployAgentModal
           onClose={() => setShowDeployAgent(false)}
           hosts={hostList}
+          onRefreshHosts={loadHosts}
+          onSelectHost={(id) => setSelectedHostId(id)}
         />
       )}
     </div>

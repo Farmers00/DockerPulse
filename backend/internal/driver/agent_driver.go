@@ -29,6 +29,7 @@ type AgentSession struct {
 	pendingMu  sync.RWMutex
 	pending    map[string]chan AgentMessage
 	streamChan map[string]chan AgentMessage
+	doneChan   chan struct{}
 }
 
 func NewAgentSession(hostID string, conn *websocket.Conn) *AgentSession {
@@ -37,10 +38,16 @@ func NewAgentSession(hostID string, conn *websocket.Conn) *AgentSession {
 		Conn:       conn,
 		pending:    make(map[string]chan AgentMessage),
 		streamChan: make(map[string]chan AgentMessage),
+		doneChan:   make(chan struct{}),
 	}
 }
 
+func (s *AgentSession) Wait() {
+	<-s.doneChan
+}
+
 func (s *AgentSession) StartReceiver() {
+	defer close(s.doneChan)
 	for {
 		_, msgBytes, err := s.Conn.ReadMessage()
 		if err != nil {

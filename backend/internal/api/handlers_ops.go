@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/dockpulse/dockmgr/internal/database"
 	"github.com/gin-gonic/gin"
 )
 
@@ -259,8 +260,24 @@ func (s *Server) handleAgentWS(c *gin.Context) {
 		return
 	}
 
+	// Auto-register host in database if not present, or set status to online
+	h, err := s.db.GetHost(hostID)
+	if err != nil || h == nil {
+		newHost := &database.Host{
+			ID:       hostID,
+			Name:     hostID,
+			Driver:   database.DriverAgent,
+			Address:  c.ClientIP(),
+			BaseDir:  "~/docker",
+			Status:   "online",
+			LastSeen: time.Now().UTC(),
+		}
+		_ = s.db.CreateHost(newHost)
+	} else {
+		_ = s.db.UpdateHostStatus(hostID, "online")
+	}
+
 	session := s.agentManager.Register(hostID, ws)
-	_ = s.db.UpdateHostStatus(hostID, "online")
 
 	defer func() {
 		s.agentManager.Unregister(hostID)
@@ -268,13 +285,7 @@ func (s *Server) handleAgentWS(c *gin.Context) {
 		ws.Close()
 	}()
 
-	// Wait until connection closes
-	for {
-		if _, _, err := ws.ReadMessage(); err != nil {
-			break
-		}
-	}
-	_ = session
+	session.Wait()
 }
 
 func (s *Server) handleGetAgentToken(c *gin.Context) {

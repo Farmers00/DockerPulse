@@ -6,9 +6,16 @@ import { Host } from '../types';
 interface DeployAgentModalProps {
   onClose: () => void;
   hosts: Host[];
+  onRefreshHosts?: () => void;
+  onSelectHost?: (hostId: string) => void;
 }
 
-export const DeployAgentModal: React.FC<DeployAgentModalProps> = ({ onClose, hosts }) => {
+export const DeployAgentModal: React.FC<DeployAgentModalProps> = ({
+  onClose,
+  hosts,
+  onRefreshHosts,
+  onSelectHost,
+}) => {
   const [nodeName, setNodeName] = useState('remote-node-1');
   const [agentToken, setAgentToken] = useState('fetching...');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
@@ -32,7 +39,16 @@ export const DeployAgentModal: React.FC<DeployAgentModalProps> = ({ onClose, hos
       .catch(() => {
         setAgentToken('dockerpulse_agent_shared_join_token_2026');
       });
-  }, []);
+
+    // Auto-refresh hosts list to detect when agent dials in
+    const interval = setInterval(() => {
+      if (onRefreshHosts) {
+        onRefreshHosts();
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [onRefreshHosts]);
 
   const copyText = (text: string, idx: number) => {
     if (navigator.clipboard && window.isSecureContext) {
