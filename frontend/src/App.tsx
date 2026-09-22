@@ -753,6 +753,7 @@ export const App: React.FC = () => {
               stackList.map((s) => {
                 const stackContainers = containerList.filter((c) => matchesStack(c, s));
                 const runningCount = stackContainers.filter((c) => c && c.state === 'running').length;
+                const updateCount = stackContainers.filter((c) => c && updates[c.image]).length;
 
                 return (
                   <div
@@ -765,15 +766,23 @@ export const App: React.FC = () => {
                           <Folder className="w-4 h-4 text-sky-400" />
                           <h3 className="font-bold text-sm text-slate-100">{s.name}</h3>
                         </div>
-                        <span
-                          className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold ${
-                            runningCount > 0
-                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                              : 'bg-slate-800 text-slate-400'
-                          }`}
-                        >
-                          {runningCount}/{stackContainers.length} Running
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          {updateCount > 0 && (
+                            <span className="flex items-center gap-1 rounded bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 text-[10px] font-mono font-semibold text-amber-400">
+                              <ArrowUpCircle className="w-3 h-3" />
+                              {updateCount} {updateCount === 1 ? 'Update' : 'Updates'}
+                            </span>
+                          )}
+                          <span
+                            className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold ${
+                              runningCount > 0
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                : 'bg-slate-800 text-slate-400'
+                            }`}
+                          >
+                            {runningCount}/{stackContainers.length} Running
+                          </span>
+                        </div>
                       </div>
                       <p className="text-xs font-mono text-slate-400 break-all">{s.path}</p>
                     </div>
@@ -785,19 +794,31 @@ export const App: React.FC = () => {
                           Services
                         </span>
                         <div className="flex flex-wrap gap-1.5">
-                          {stackContainers.map((sc) => (
-                            <span
-                              key={sc.id}
-                              className="rounded bg-slate-800/80 border border-slate-700/60 px-2 py-1 text-xs font-mono text-slate-300 flex items-center gap-1.5"
-                            >
-                              <span>{sc.service || (sc.names && sc.names[0] ? sc.names[0].replace('/', '') : sc.id?.slice(0, 12))}</span>
+                          {stackContainers.map((sc) => {
+                            const hasUp = updates[sc.image] || false;
+                            return (
                               <span
-                                className={`w-1.5 h-1.5 rounded-full ${
-                                  sc.state === 'running' ? 'bg-emerald-400' : 'bg-slate-600'
+                                key={sc.id}
+                                className={`rounded px-2 py-1 text-xs font-mono flex items-center gap-1.5 border transition-all ${
+                                  hasUp
+                                    ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+                                    : 'bg-slate-800/80 border-slate-700/60 text-slate-300'
                                 }`}
-                              />
-                            </span>
-                          ))}
+                              >
+                                <span>{sc.service || (sc.names && sc.names[0] ? sc.names[0].replace('/', '') : sc.id?.slice(0, 12))}</span>
+                                {hasUp && (
+                                  <span title={`Update available: ${sc.image}`}>
+                                    <ArrowUpCircle className="w-3 h-3 text-amber-400 shrink-0" />
+                                  </span>
+                                )}
+                                <span
+                                  className={`w-1.5 h-1.5 rounded-full ${
+                                    sc.state === 'running' ? 'bg-emerald-400' : 'bg-slate-600'
+                                  }`}
+                                />
+                              </span>
+                            );
+                          })}
                         </div>
                       </div>
                     )}
@@ -807,10 +828,14 @@ export const App: React.FC = () => {
                       {/* Push-Button Update (pull && up -d) */}
                       <button
                         onClick={() => setUpdateAction({ stack: s, action: 'pull_up' })}
-                        className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 py-1.5 px-3 text-xs font-medium text-white shadow-md shadow-sky-600/20 transition-all"
+                        className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-3 text-xs font-medium text-white shadow-md transition-all ${
+                          updateCount > 0
+                            ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-600/30 ring-1 ring-amber-400/50 font-semibold'
+                            : 'bg-sky-600 hover:bg-sky-500 shadow-sky-600/20'
+                        }`}
                       >
                         <ArrowUpCircle className="w-3.5 h-3.5" />
-                        Pull & Up
+                        {updateCount > 0 ? `Pull & Update (${updateCount})` : 'Pull & Up'}
                       </button>
 
                       <button
