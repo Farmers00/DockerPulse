@@ -908,7 +908,10 @@ export const App: React.FC = () => {
           stackName={updateAction.stack.name}
           action={updateAction.action}
           onClose={() => setUpdateAction(null)}
-          onFinished={refreshHostData}
+          onFinished={() => {
+            refreshHostData();
+            handleCheckUpdates(true);
+          }}
         />
       )}
 

@@ -27,11 +27,12 @@ type ContainerPort struct {
 }
 
 type ContainerInfo struct {
-	ID         string          `json:"id"`
-	Names      []string        `json:"names"`
-	Image      string          `json:"image"`
-	ImageID    string          `json:"image_id"`
-	Command    string          `json:"command"`
+	ID          string          `json:"id"`
+	Names       []string        `json:"names"`
+	Image       string          `json:"image"`
+	ImageID     string          `json:"image_id"`
+	RepoDigests []string        `json:"repo_digests,omitempty"`
+	Command     string          `json:"command"`
 	Created    int64           `json:"created"`
 	State      string          `json:"state"` // "running", "exited", "paused"
 	Status     string          `json:"status"` // e.g. "Up 2 hours"

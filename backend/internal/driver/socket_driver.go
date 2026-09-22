@@ -76,21 +76,46 @@ func (d *SocketDriver) ListContainers(ctx context.Context) ([]ContainerInfo, err
 		return nil, err
 	}
 
+	// Pre-fetch images to map ImageID and tags to RepoDigests
+	type rawImageSummary struct {
+		ID          string   `json:"Id"`
+		RepoTags    []string `json:"RepoTags"`
+		RepoDigests []string `json:"RepoDigests"`
+	}
+	var rawImages []rawImageSummary
+	_ = d.client.Get(ctx, "/images/json", &rawImages)
+
+	imageDigests := make(map[string][]string)
+	for _, img := range rawImages {
+		if len(img.RepoDigests) > 0 {
+			imageDigests[img.ID] = img.RepoDigests
+			for _, tag := range img.RepoTags {
+				imageDigests[tag] = img.RepoDigests
+			}
+		}
+	}
+
 	result := make([]ContainerInfo, 0, len(raw))
 	for _, c := range raw {
+		digests := imageDigests[c.ImageID]
+		if len(digests) == 0 {
+			digests = imageDigests[c.Image]
+		}
+
 		info := ContainerInfo{
-			ID:         c.ID,
-			Names:      c.Names,
-			Image:      c.Image,
-			ImageID:    c.ImageID,
-			Command:    c.Command,
-			Created:    c.Created,
-			State:      c.State,
-			Status:     c.Status,
-			Stack:      c.Labels["com.docker.compose.project"],
-			Service:    c.Labels["com.docker.compose.service"],
-			WorkingDir: c.Labels["com.docker.compose.project.working_dir"],
-			ConfigFile: c.Labels["com.docker.compose.project.config_files"],
+			ID:          c.ID,
+			Names:       c.Names,
+			Image:       c.Image,
+			ImageID:     c.ImageID,
+			RepoDigests: digests,
+			Command:     c.Command,
+			Created:     c.Created,
+			State:       c.State,
+			Status:      c.Status,
+			Stack:       c.Labels["com.docker.compose.project"],
+			Service:     c.Labels["com.docker.compose.service"],
+			WorkingDir:  c.Labels["com.docker.compose.project.working_dir"],
+			ConfigFile:  c.Labels["com.docker.compose.project.config_files"],
 		}
 
 		for _, p := range c.Ports {
