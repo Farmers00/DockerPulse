@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -65,25 +67,22 @@ func (u *UpdateChecker) CheckImage(ctx context.Context, imageName string, curren
 		primaryRemoteDigest = manifestInfo.PlatformDigests[0]
 	}
 
-	if primaryRemoteDigest != "" || manifestInfo.ConfigDigest != "" {
+	cleanCurrent := cleanDigest(currentImageID)
+	cleanIndex := cleanDigest(manifestInfo.IndexDigest)
+	cleanConfig := cleanDigest(manifestInfo.ConfigDigest)
+
+	if cleanIndex != "" || len(manifestInfo.PlatformDigests) > 0 || cleanConfig != "" {
 		matched := false
 
-		isMatch := func(a, b string) bool {
-			cleanA := strings.TrimPrefix(strings.TrimSpace(a), "sha256:")
-			cleanB := strings.TrimPrefix(strings.TrimSpace(b), "sha256:")
-			return cleanA != "" && cleanB != "" && (cleanA == cleanB || strings.HasPrefix(cleanA, cleanB) || strings.HasPrefix(cleanB, cleanA))
-		}
-
 		// 1. Check if local currentImageID matches remote ConfigDigest
-		if manifestInfo.ConfigDigest != "" && isMatch(currentImageID, manifestInfo.ConfigDigest) {
+		if cleanConfig != "" && cleanCurrent != "" && cleanCurrent == cleanConfig {
 			matched = true
 		}
 
 		// 2. Check if any local repoDigests match remote IndexDigest
-		if !matched && manifestInfo.IndexDigest != "" {
-			cleanIdx := strings.TrimPrefix(manifestInfo.IndexDigest, "sha256:")
+		if !matched && cleanIndex != "" {
 			for _, rd := range repoDigests {
-				if strings.Contains(rd, cleanIdx) {
+				if strings.Contains(cleanDigest(rd), cleanIndex) {
 					matched = true
 					break
 				}
@@ -93,9 +92,16 @@ func (u *UpdateChecker) CheckImage(ctx context.Context, imageName string, curren
 		// 3. Check if any local repoDigests match any remote PlatformDigests
 		if !matched {
 			for _, pd := range manifestInfo.PlatformDigests {
-				cleanPd := strings.TrimPrefix(pd, "sha256:")
+				cleanPd := cleanDigest(pd)
+				if cleanPd == "" {
+					continue
+				}
+				if cleanCurrent != "" && cleanCurrent == cleanPd {
+					matched = true
+					break
+				}
 				for _, rd := range repoDigests {
-					if strings.Contains(rd, cleanPd) {
+					if strings.Contains(cleanDigest(rd), cleanPd) {
 						matched = true
 						break
 					}
@@ -106,12 +112,7 @@ func (u *UpdateChecker) CheckImage(ctx context.Context, imageName string, curren
 			}
 		}
 
-		// 4. Fallback: currentImageID direct comparison
-		if !matched && manifestInfo.IndexDigest != "" && isMatch(currentImageID, manifestInfo.IndexDigest) {
-			matched = true
-		}
-
-		// If no matches found, remote image has been updated!
+		// If no remote digest matched our local image, an update is available!
 		if !matched {
 			hasUpdate = true
 		}
@@ -123,6 +124,15 @@ func (u *UpdateChecker) CheckImage(ctx context.Context, imageName string, curren
 		RemoteDigest:  primaryRemoteDigest,
 		HasUpdate:     hasUpdate,
 	}, nil
+}
+
+func cleanDigest(d string) string {
+	d = strings.TrimSpace(d)
+	d = strings.Trim(d, "\"")
+	if idx := strings.LastIndex(d, "sha256:"); idx != -1 {
+		return d[idx+7:]
+	}
+	return strings.TrimPrefix(d, "sha256:")
 }
 
 func parseImageRef(image string) (registry, repo, tag string) {
@@ -138,7 +148,10 @@ func parseImageRef(image string) (registry, repo, tag string) {
 		registry = "registry-1.docker.io"
 		repo = "library/" + parts[0]
 	case 2:
-		if strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":") {
+		if parts[0] == "docker.io" || parts[0] == "index.docker.io" {
+			registry = "registry-1.docker.io"
+			repo = "library/" + parts[1]
+		} else if strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":") {
 			registry = parts[0]
 			repo = parts[1]
 		} else {
@@ -146,62 +159,116 @@ func parseImageRef(image string) (registry, repo, tag string) {
 			repo = parts[0] + "/" + parts[1]
 		}
 	default:
-		registry = parts[0]
-		repo = strings.Join(parts[1:], "/")
+		if parts[0] == "docker.io" || parts[0] == "index.docker.io" {
+			registry = "registry-1.docker.io"
+			repo = strings.Join(parts[1:], "/")
+			if !strings.Contains(repo, "/") {
+				repo = "library/" + repo
+			}
+		} else {
+			registry = parts[0]
+			repo = strings.Join(parts[1:], "/")
+		}
 	}
 
 	return registry, repo, tag
 }
 
-func (u *UpdateChecker) fetchRemoteManifest(ctx context.Context, registry, repo, tag string) (*remoteManifestInfo, error) {
-	// 1. Get auth token if Docker Hub or GHCR
-	var token string
-	if registry == "registry-1.docker.io" {
-		authURL := fmt.Sprintf("https://auth.docker.io/token?service=registry.docker.io&scope=repository:%s:pull", repo)
-		req, _ := http.NewRequestWithContext(ctx, "GET", authURL, nil)
-		resp, err := u.client.Do(req)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			var authResp struct {
-				Token string `json:"token"`
-			}
-			_ = json.NewDecoder(resp.Body).Decode(&authResp)
-			token = authResp.Token
-			resp.Body.Close()
+func parseWwwAuthHeader(header string) (realm, service, scope string) {
+	header = strings.TrimSpace(header)
+	if !strings.HasPrefix(strings.ToLower(header), "bearer ") {
+		return "", "", ""
+	}
+	header = header[7:]
+
+	parts := strings.Split(header, ",")
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		kv := strings.SplitN(p, "=", 2)
+		if len(kv) != 2 {
+			continue
 		}
-	} else if registry == "ghcr.io" {
-		authURL := fmt.Sprintf("https://ghcr.io/token?service=ghcr.io&scope=repository:%s:pull", repo)
-		req, _ := http.NewRequestWithContext(ctx, "GET", authURL, nil)
-		resp, err := u.client.Do(req)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			var authResp struct {
-				Token string `json:"token"`
-			}
-			_ = json.NewDecoder(resp.Body).Decode(&authResp)
-			token = authResp.Token
-			resp.Body.Close()
+		key := strings.ToLower(strings.TrimSpace(kv[0]))
+		val := strings.Trim(strings.TrimSpace(kv[1]), "\"")
+		switch key {
+		case "realm":
+			realm = val
+		case "service":
+			service = val
+		case "scope":
+			scope = val
 		}
 	}
+	return realm, service, scope
+}
 
+func (u *UpdateChecker) fetchRemoteManifest(ctx context.Context, registry, repo, tag string) (*remoteManifestInfo, error) {
 	manifestURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", registry, repo, tag)
 	req, err := http.NewRequestWithContext(ctx, "GET", manifestURL, nil)
 	if err != nil {
 		return nil, err
 	}
-
-	// Accept both manifest lists / OCI image indexes and single-arch manifests
 	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
 
 	resp, err := u.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
+
+	// If 401 Unauthorized, perform standard Registry V2 Bearer Token authentication
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+
+		authHeader := resp.Header.Get("Www-Authenticate")
+		realm, service, scope := parseWwwAuthHeader(authHeader)
+
+		if realm == "" {
+			// Fallback defaults for standard Docker Hub and GHCR
+			if registry == "registry-1.docker.io" {
+				realm = "https://auth.docker.io/token"
+				service = "registry.docker.io"
+				scope = fmt.Sprintf("repository:%s:pull", repo)
+			} else if registry == "ghcr.io" {
+				realm = "https://ghcr.io/token"
+				service = "ghcr.io"
+				scope = fmt.Sprintf("repository:%s:pull", repo)
+			}
+		}
+
+		if realm != "" {
+			tokenURL := fmt.Sprintf("%s?service=%s&scope=%s", realm, url.QueryEscape(service), url.QueryEscape(scope))
+			tokenReq, _ := http.NewRequestWithContext(ctx, "GET", tokenURL, nil)
+			tokenResp, err := u.client.Do(tokenReq)
+			if err == nil && tokenResp.StatusCode == http.StatusOK {
+				var authResp struct {
+					Token       string `json:"token"`
+					AccessToken string `json:"access_token"`
+				}
+				_ = json.NewDecoder(tokenResp.Body).Decode(&authResp)
+				tokenResp.Body.Close()
+
+				tok := authResp.Token
+				if tok == "" {
+					tok = authResp.AccessToken
+				}
+
+				if tok != "" {
+					req2, _ := http.NewRequestWithContext(ctx, "GET", manifestURL, nil)
+					req2.Header.Set("Accept", "application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json")
+					req2.Header.Set("Authorization", "Bearer "+tok)
+					resp, err = u.client.Do(req2)
+					if err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+	}
+
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("registry returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("registry %s returned status %d for %s:%s", registry, resp.StatusCode, repo, tag)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
@@ -253,15 +320,25 @@ func (u *UpdateChecker) CheckHostContainers(ctx context.Context, h driver.HostDr
 		return nil, err
 	}
 
+	cache := make(map[string]*CheckResult)
 	var results []CheckResult
 	for _, c := range containers {
 		if c.Image == "" {
 			continue
 		}
-		res, err := u.CheckImage(ctx, c.Image, c.ImageID, c.RepoDigests)
-		if err == nil {
-			results = append(results, *res)
+		cacheKey := c.Image + "::" + c.ImageID
+		if cached, ok := cache[cacheKey]; ok {
+			results = append(results, *cached)
+			continue
 		}
+
+		res, err := u.CheckImage(ctx, c.Image, c.ImageID, c.RepoDigests)
+		if err != nil {
+			log.Printf("[Updater] CheckImage error for host %s, image %s: %v", hostID, c.Image, err)
+			continue
+		}
+		cache[cacheKey] = res
+		results = append(results, *res)
 	}
 	return results, nil
 }

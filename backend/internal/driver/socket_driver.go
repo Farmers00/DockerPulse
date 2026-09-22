@@ -86,6 +86,7 @@ func (d *SocketDriver) ListContainers(ctx context.Context) ([]ContainerInfo, err
 	_ = d.client.Get(ctx, "/images/json", &rawImages)
 
 	imageDigests := make(map[string][]string)
+	imageTags := make(map[string][]string)
 	for _, img := range rawImages {
 		if len(img.RepoDigests) > 0 {
 			imageDigests[img.ID] = img.RepoDigests
@@ -93,19 +94,39 @@ func (d *SocketDriver) ListContainers(ctx context.Context) ([]ContainerInfo, err
 				imageDigests[tag] = img.RepoDigests
 			}
 		}
+		if len(img.RepoTags) > 0 {
+			imageTags[img.ID] = img.RepoTags
+		}
 	}
 
 	result := make([]ContainerInfo, 0, len(raw))
 	for _, c := range raw {
+		displayImage := c.Image
+		if strings.HasPrefix(displayImage, "sha256:") || displayImage == "" {
+			if composeImg := c.Labels["com.docker.compose.image"]; composeImg != "" && !strings.HasPrefix(composeImg, "sha256:") {
+				displayImage = composeImg
+			} else if tags := imageTags[c.ImageID]; len(tags) > 0 {
+				for _, t := range tags {
+					if t != "" && t != "<none>:<none>" && !strings.HasPrefix(t, "sha256:") {
+						displayImage = t
+						break
+					}
+				}
+			}
+		}
+
 		digests := imageDigests[c.ImageID]
 		if len(digests) == 0 {
 			digests = imageDigests[c.Image]
+		}
+		if len(digests) == 0 && displayImage != "" {
+			digests = imageDigests[displayImage]
 		}
 
 		info := ContainerInfo{
 			ID:          c.ID,
 			Names:       c.Names,
-			Image:       c.Image,
+			Image:       displayImage,
 			ImageID:     c.ImageID,
 			RepoDigests: digests,
 			Command:     c.Command,
@@ -473,17 +494,83 @@ func (d *SocketDriver) WriteStackFiles(ctx context.Context, stackPath string, co
 	return nil
 }
 
+func isSelfUpdate(stackPath string) bool {
+	composeFile := findComposeFile(stackPath)
+	if composeFile != "" {
+		content, err := os.ReadFile(composeFile)
+		if err == nil && strings.Contains(strings.ToLower(string(content)), "dockerpulse") {
+			return true
+		}
+	}
+	return strings.Contains(strings.ToLower(stackPath), "dockerpulse")
+}
+
 func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, action string, writer io.Writer) error {
 	var args []string
 	switch action {
-	case "up":
-		args = []string{"compose", "up", "-d"}
+	case "up", "restart":
+		if isSelfUpdate(stackPath) {
+			fmt.Fprintf(writer, "[DockPulse] Detected self-update/restart of DockerPulse at %s\n", stackPath)
+			fmt.Fprintln(writer, "[DockPulse] Spawning detached helper runner to safely restart container...")
+
+			selfRef, _ := os.Hostname()
+			if selfRef == "" {
+				selfRef = "dockerpulse-agent"
+			}
+
+			composeSubCmd := "up -d"
+			if action == "restart" {
+				composeSubCmd = "restart"
+			}
+
+			cmdScript := fmt.Sprintf("sleep 2 && docker compose %s", composeSubCmd)
+			runnerCmd := exec.Command("docker", "run", "--rm", "-d",
+				"--entrypoint", "sh",
+				"-v", "/var/run/docker.sock:/var/run/docker.sock",
+				"--volumes-from", selfRef,
+				"-w", stackPath,
+				"ghcr.io/farmers00/dockerpulse:latest",
+				"-c", cmdScript,
+			)
+
+			out, err := runnerCmd.CombinedOutput()
+			if err != nil && selfRef != "dockerpulse-agent" {
+				runnerCmd2 := exec.Command("docker", "run", "--rm", "-d",
+					"--entrypoint", "sh",
+					"-v", "/var/run/docker.sock:/var/run/docker.sock",
+					"--volumes-from", "dockerpulse-agent",
+					"-w", stackPath,
+					"ghcr.io/farmers00/dockerpulse:latest",
+					"-c", cmdScript,
+				)
+				if out2, err2 := runnerCmd2.CombinedOutput(); err2 == nil {
+					out = out2
+					err = nil
+				}
+			}
+
+			if err == nil {
+				cid := strings.TrimSpace(string(out))
+				if len(cid) > 12 {
+					cid = cid[:12]
+				}
+				fmt.Fprintf(writer, "[DockPulse] Detached runner container launched (ID: %s).\n", cid)
+				fmt.Fprintf(writer, "[DockPulse] Container will %s in 2 seconds with updated image.\n", action)
+				fmt.Fprintln(writer, "[DockPulse] Command completed successfully.")
+				return nil
+			}
+
+			fmt.Fprintf(writer, "[DockPulse] Detached runner failed (%v: %s), falling back to direct compose\n", err, strings.TrimSpace(string(out)))
+		}
+
+		args = []string{"compose", action}
+		if action == "up" {
+			args = append(args, "-d")
+		}
 	case "down":
 		args = []string{"compose", "down"}
 	case "pull":
 		args = []string{"compose", "pull"}
-	case "restart":
-		args = []string{"compose", "restart"}
 	case "pull_up":
 		if err := d.ExecuteCompose(ctx, stackPath, "pull", writer); err != nil {
 			return err

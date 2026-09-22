@@ -84,6 +84,22 @@ function formatImage(img: string): string {
   return img;
 }
 
+function isContainerUpdateAvailable(c: ContainerInfo, updateMap: Record<string, boolean>): boolean {
+  if (!c || !updateMap) return false;
+  if (c.image && updateMap[c.image]) return true;
+  if (c.image_id && updateMap[c.image_id]) return true;
+  if (c.image) {
+    if (updateMap[c.image + ':latest']) return true;
+    if (c.image.endsWith(':latest') && updateMap[c.image.replace(/:latest$/, '')]) return true;
+    const parts = c.image.split('/');
+    const short = parts[parts.length - 1];
+    if (updateMap[short]) return true;
+    if (updateMap[short + ':latest']) return true;
+    if (short.endsWith(':latest') && updateMap[short.replace(/:latest$/, '')]) return true;
+  }
+  return false;
+}
+
 export const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [authNeeded, setAuthNeeded] = useState<boolean | null>(null);
@@ -220,6 +236,22 @@ export const App: React.FC = () => {
       (Array.isArray(results) ? results : []).forEach((r) => {
         if (r.has_update) {
           map[r.image] = true;
+          if (r.current_digest) {
+            map[r.current_digest] = true;
+          }
+          if (r.image.endsWith(':latest')) {
+            map[r.image.replace(/:latest$/, '')] = true;
+          } else if (!r.image.includes(':')) {
+            map[r.image + ':latest'] = true;
+          }
+          const parts = r.image.split('/');
+          const short = parts[parts.length - 1];
+          map[short] = true;
+          if (short.endsWith(':latest')) {
+            map[short.replace(/:latest$/, '')] = true;
+          } else if (!short.includes(':')) {
+            map[short + ':latest'] = true;
+          }
         }
       });
       setUpdates(map);
@@ -238,7 +270,7 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (!selectedHostId) return;
     const running = containerList.filter((c) => c && c.state === 'running').length;
-    const updateCount = containerList.filter((c) => c && updates[c.image]).length;
+    const updateCount = containerList.filter((c) => isContainerUpdateAvailable(c, updates)).length;
     setFleetStats((prev) => ({
       ...prev,
       [selectedHostId]: {
@@ -612,7 +644,7 @@ export const App: React.FC = () => {
             ) : (
               containerList.map((c) => {
                 const name = c.names[0]?.replace('/', '') || c.id.slice(0, 12);
-                const hasUpdate = updates[c.image] || false;
+                const hasUpdate = isContainerUpdateAvailable(c, updates);
                 const isRunning = c.state === 'running';
 
                 return (
@@ -753,7 +785,7 @@ export const App: React.FC = () => {
               stackList.map((s) => {
                 const stackContainers = containerList.filter((c) => matchesStack(c, s));
                 const runningCount = stackContainers.filter((c) => c && c.state === 'running').length;
-                const updateCount = stackContainers.filter((c) => c && updates[c.image]).length;
+                const updateCount = stackContainers.filter((c) => isContainerUpdateAvailable(c, updates)).length;
 
                 return (
                   <div
@@ -795,7 +827,7 @@ export const App: React.FC = () => {
                         </span>
                         <div className="flex flex-wrap gap-1.5">
                           {stackContainers.map((sc) => {
-                            const hasUp = updates[sc.image] || false;
+                            const hasUp = isContainerUpdateAvailable(sc, updates);
                             return (
                               <span
                                 key={sc.id}
