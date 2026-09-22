@@ -34,6 +34,54 @@ import { AddHostModal } from './components/AddHostModal';
 import { DeployAgentModal } from './components/DeployAgentModal';
 import { AuthModal } from './components/AuthModal';
 
+function matchesStack(c: ContainerInfo, s: Stack): boolean {
+  if (!c || !s) return false;
+
+  // 1. Direct stack name match (exact or case-insensitive)
+  if (c.stack) {
+    const cStackLower = c.stack.toLowerCase().trim();
+    const sNameLower = s.name.toLowerCase().trim();
+    if (cStackLower === sNameLower) return true;
+
+    // Docker Compose normalizes project names to alphanumeric (e.g. "llama.cpp" -> "llamacpp")
+    const cStackAlpha = cStackLower.replace(/[^a-z0-9]/g, '');
+    const sNameAlpha = sNameLower.replace(/[^a-z0-9]/g, '');
+    if (cStackAlpha && sNameAlpha && cStackAlpha === sNameAlpha) return true;
+  }
+
+  // 2. Working dir match (e.g. /home/farmers00/docker/llama.cpp)
+  if (c.working_dir && s.path) {
+    const normWorkDir = c.working_dir.replace(/[\\/]+$/, '').toLowerCase();
+    const normStackPath = s.path.replace(/[\\/]+$/, '').toLowerCase();
+    if (normWorkDir === normStackPath) return true;
+
+    // Basename of working dir matches stack name
+    const workDirBase = normWorkDir.split(/[\\/]/).filter(Boolean).pop();
+    const sNameLower = s.name.toLowerCase().trim();
+    const sNameAlpha = sNameLower.replace(/[^a-z0-9]/g, '');
+    if (workDirBase && (workDirBase === sNameLower || workDirBase.replace(/[^a-z0-9]/g, '') === sNameAlpha)) {
+      return true;
+    }
+  }
+
+  // 3. Config file match (e.g. /home/farmers00/docker/llama.cpp/docker-compose.yml)
+  if (c.config_file && s.path) {
+    const normConfigFile = c.config_file.replace(/\\/g, '/').toLowerCase();
+    const normStackPath = s.path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (normConfigFile.startsWith(normStackPath + '/')) return true;
+  }
+
+  return false;
+}
+
+function formatImage(img: string): string {
+  if (!img) return '';
+  if (img.startsWith('sha256:')) {
+    return 'sha256:' + img.slice(7, 19) + '…';
+  }
+  return img;
+}
+
 export const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [authNeeded, setAuthNeeded] = useState<boolean | null>(null);
@@ -452,36 +500,38 @@ export const App: React.FC = () => {
                     className="rounded-xl border border-slate-800/80 bg-slate-900/60 hover:border-slate-700/80 p-4 transition-all flex flex-col md:flex-row md:items-center justify-between gap-4"
                   >
                     {/* Left: Container Info & State */}
-                    <div className="flex items-center gap-3.5 min-w-[280px]">
+                    <div className="flex items-center gap-3.5 flex-1 min-w-0 pr-2">
                       <div
                         className={`w-2.5 h-2.5 rounded-full shrink-0 ${
                           isRunning ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50' : 'bg-slate-600'
                         }`}
                       />
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-sm text-slate-100">{name}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-sm text-slate-100 truncate">{name}</span>
                           {c.stack && (
-                            <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-mono text-sky-400 border border-sky-500/20">
+                            <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-mono text-sky-400 border border-sky-500/20 shrink-0">
                               {c.stack}
                             </span>
                           )}
                           {hasUpdate && (
-                            <span className="flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-400 border border-amber-500/20">
+                            <span className="flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-400 border border-amber-500/20 shrink-0">
                               <ArrowUpCircle className="w-3 h-3" /> Update Available
                             </span>
                           )}
                         </div>
-                        <div className="flex items-center gap-2 text-xs text-slate-400 font-mono mt-0.5">
-                          <span>{c.image}</span>
-                          <span>&bull;</span>
-                          <span>{c.status}</span>
+                        <div className="flex items-center gap-2 text-xs text-slate-400 font-mono mt-0.5 min-w-0">
+                          <span className="truncate max-w-[200px] sm:max-w-[260px] md:max-w-[320px]" title={c.image}>
+                            {formatImage(c.image)}
+                          </span>
+                          <span className="shrink-0">&bull;</span>
+                          <span className="shrink-0">{c.status}</span>
                         </div>
                       </div>
                     </div>
 
                     {/* Middle: Live Stats (CPU / RAM / Net) */}
-                    <div className="flex items-center gap-6 text-xs font-mono text-slate-300">
+                    <div className="flex items-center gap-6 text-xs font-mono text-slate-300 shrink-0">
                       <div>
                         <span className="text-[10px] text-slate-500 block">CPU</span>
                         <div className="flex items-center gap-1.5">
@@ -580,7 +630,7 @@ export const App: React.FC = () => {
               </div>
             ) : (
               stackList.map((s) => {
-                const stackContainers = containerList.filter((c) => c && c.stack === s.name);
+                const stackContainers = containerList.filter((c) => matchesStack(c, s));
                 const runningCount = stackContainers.filter((c) => c && c.state === 'running').length;
 
                 return (
@@ -617,9 +667,14 @@ export const App: React.FC = () => {
                           {stackContainers.map((sc) => (
                             <span
                               key={sc.id}
-                              className="rounded bg-slate-800/80 border border-slate-700/60 px-2 py-1 text-xs font-mono text-slate-300"
+                              className="rounded bg-slate-800/80 border border-slate-700/60 px-2 py-1 text-xs font-mono text-slate-300 flex items-center gap-1.5"
                             >
-                              {sc.service || (sc.names && sc.names[0] ? sc.names[0].replace('/', '') : sc.id?.slice(0, 12))}
+                              <span>{sc.service || (sc.names && sc.names[0] ? sc.names[0].replace('/', '') : sc.id?.slice(0, 12))}</span>
+                              <span
+                                className={`w-1.5 h-1.5 rounded-full ${
+                                  sc.state === 'running' ? 'bg-emerald-400' : 'bg-slate-600'
+                                }`}
+                              />
                             </span>
                           ))}
                         </div>
