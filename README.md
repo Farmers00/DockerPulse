@@ -25,45 +25,86 @@ DockerPulse is a high-performance, lightweight fleet management dashboard for Do
 
 ### 1. Run DockerPulse Central Server
 
-Run with Docker Compose:
+#### Step A: Configure Environment & Secrets
+Create a `.env` file next to your `docker-compose.yml`:
+
+```bash
+# Generate secure random tokens for your secrets:
+openssl rand -hex 32
+```
+
+Create `.env`:
+```ini
+# Port to expose on the host machine (change to 8081 if 8080 is in use)
+PORT=8080
+
+# Secret key used to sign and verify JWT authentication tokens (Required)
+JWT_SECRET=replace_with_output_from_openssl_rand_hex_32
+
+# Shared secret token used by remote DockerPulse agents to join the fleet (Required)
+AGENT_SECRET=replace_with_output_from_openssl_rand_hex_32
+
+# Optional: Reverse Proxy SSO headers (Authelia, Authentik, Cloudflare Access)
+# PROXY_AUTH_HEADER=Remote-User
+# PROXY_EMAIL_HEADER=Remote-Email
+```
+
+#### Step B: Run with Docker Compose
 
 ```yaml
 services:
   dockerpulse:
-    image: dockerpulse/dockerpulse:latest
+    image: ghcr.io/farmers00/dockerpulse:latest
     container_name: dockerpulse
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${PORT:-8080}:8080"
     volumes:
+      # Data directory for SQLite database and state
       - ./data:/data
+      # Mount local Docker socket to manage this host directly
       - /var/run/docker.sock:/var/run/docker.sock
+      # Mount your host's docker compose directory (e.g. ~/docker)
       - ${HOME}/docker:/root/docker
     environment:
       - PORT=8080
       - DATA_DIR=/data
-      - JWT_SECRET=change_to_a_secure_random_key
-      - AGENT_SECRET=dockerpulse_agent_shared_token
-      - PROXY_AUTH_HEADER=Remote-User # Optional for Authelia/Authentik
+      - JWT_SECRET=${JWT_SECRET:-change_me_to_a_secure_random_string_in_production}
+      - AGENT_SECRET=${AGENT_SECRET:-dockerpulse_agent_shared_join_token_2026}
+      # Reverse proxy SSO headers (Authelia, Authentik, Cloudflare Access)
+      - PROXY_AUTH_HEADER=${PROXY_AUTH_HEADER:-Remote-User}
+      - PROXY_EMAIL_HEADER=${PROXY_EMAIL_HEADER:-Remote-Email}
 ```
 
 Start the container:
 ```bash
 docker compose up -d
 ```
-Then open `http://<your-server-ip>:8080` to complete the first-time admin setup wizard.
+Then open `http://<your-server-ip>:8080` (or your configured `PORT`) to complete the first-time admin setup wizard.
 
 ---
 
 ### 2. Connect Remote Hosts
 
-#### Option A: Lightweight Agent (Recommended)
-On your remote Linux host, deploy `docker-compose.agent.yml`:
+#### Option A: 1-Line Command (Fastest &bull; Container-based)
+Log into your remote Linux host and run:
+
+```bash
+curl -fsSL "http://<manager-ip>:8080/install-agent.sh?id=node-1&token=<your-agent-secret>" | bash
+```
+
+This single command automatically:
+1. Creates `~/docker/dockerpulse-agent/docker-compose.yml`.
+2. Launches the `dockerpulse-agent` container using `ghcr.io/farmers00/dockerpulse:latest`.
+3. Connects back to your manager over WebSocket and activates the node in your dashboard.
+
+#### Option B: Manual Docker Compose
+On your remote Linux host, deploy `docker-compose.yml` into `~/docker/dockerpulse-agent/`:
 
 ```yaml
 services:
   dockerpulse-agent:
-    image: dockerpulse/dockerpulse:latest
+    image: ghcr.io/farmers00/dockerpulse:latest
     container_name: dockerpulse-agent
     restart: unless-stopped
     volumes:
@@ -71,13 +112,18 @@ services:
       - ${HOME}/docker:/root/docker
     command: >
       dockerpulse agent
-      --server ws://manager-ip:8080/ws/agent
-      --token dockerpulse_agent_shared_token
+      --server ws://<manager-ip>:8080/ws/agent
+      --token <your-agent-secret>
       --host-id node-1
       --base-dir /root/docker
 ```
 
-#### Option B: Direct SSH
+Start with:
+```bash
+docker compose up -d
+```
+
+#### Option C: Direct SSH (Zero-Install)
 In the DockerPulse web dashboard:
 1. Click **Add Server** -> **Direct SSH**.
 2. Enter the host IP, SSH port, user, and paste your SSH Private Key.

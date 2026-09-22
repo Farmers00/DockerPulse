@@ -19,6 +19,9 @@ frontend/dist/
 frontend/.env.local
 
 # Docker & local state
+.env
+*.env
+!.env.example
 data/
 *.db
 *.db-wal
