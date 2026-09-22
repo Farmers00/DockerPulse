@@ -31,12 +31,14 @@ export const NetworksModal: React.FC<NetworksModalProps> = ({
     try {
       setLoading(true);
       const data = await api.listNetworks(hostId);
-      setNetworks(data);
-      if (data.length > 0 && !selectedNetwork) {
-        setSelectedNetwork(data[0].id);
+      const list = Array.isArray(data) ? data : [];
+      setNetworks(list);
+      if (list.length > 0 && !selectedNetwork) {
+        setSelectedNetwork(list[0].id);
       }
     } catch (err) {
       console.error(err);
+      setNetworks([]);
     } finally {
       setLoading(false);
     }

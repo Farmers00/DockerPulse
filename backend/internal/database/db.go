@@ -153,7 +153,7 @@ func (db *DB) ListHosts() ([]Host, error) {
 	}
 	defer rows.Close()
 
-	var hosts []Host
+	hosts := make([]Host, 0)
 	for rows.Next() {
 		var h Host
 		var authToken, sshUser sql.NullString
@@ -234,7 +234,7 @@ func (db *DB) ListStacks(hostID string) ([]Stack, error) {
 	}
 	defer rows.Close()
 
-	var stacks []Stack
+	stacks := make([]Stack, 0)
 	for rows.Next() {
 		var s Stack
 		if err := rows.Scan(&s.ID, &s.HostID, &s.Name, &s.Path, &s.Status, &s.AutoUpdate, &s.CreatedAt, &s.UpdatedAt); err != nil {
@@ -311,7 +311,7 @@ func (db *DB) ListRevisions(stackID string) ([]StackRevision, error) {
 	}
 	defer rows.Close()
 
-	var revs []StackRevision
+	revs := make([]StackRevision, 0)
 	for rows.Next() {
 		var r StackRevision
 		var note sql.NullString

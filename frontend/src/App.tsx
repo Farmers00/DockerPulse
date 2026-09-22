@@ -86,13 +86,15 @@ export const App: React.FC = () => {
 
   const loadHosts = async () => {
     try {
-      const list = await api.listHosts();
+      const raw = await api.listHosts();
+      const list = Array.isArray(raw) ? raw : [];
       setHosts(list);
       if (list.length > 0) {
-        setSelectedHostId((prev) => prev || list[0].id);
+        setSelectedHostId((prev) => (list.some((h) => h.id === prev) ? prev : list[0].id));
       }
     } catch (err) {
       console.error(err);
+      setHosts([]);
     }
   };
 
@@ -127,8 +129,8 @@ export const App: React.FC = () => {
         api.listStacks(selectedHostId).catch(() => []),
         api.getHostSystem(selectedHostId).catch(() => null),
       ]);
-      setContainers(cList);
-      setStacks(sList);
+      setContainers(Array.isArray(cList) ? cList : []);
+      setStacks(Array.isArray(sList) ? sList : []);
       setSystemInfo(sys);
     } finally {
       setLoading(false);
@@ -140,7 +142,7 @@ export const App: React.FC = () => {
     try {
       setScanning(true);
       const discovered = await api.discoverStacks(selectedHostId);
-      setStacks(discovered);
+      setStacks(Array.isArray(discovered) ? discovered : []);
     } catch (err: any) {
       alert(err.message || 'Discovery failed');
     } finally {
@@ -154,7 +156,7 @@ export const App: React.FC = () => {
       setCheckingUpdates(true);
       const results = await api.checkUpdates(selectedHostId);
       const map: Record<string, boolean> = {};
-      results.forEach((r) => {
+      (Array.isArray(results) ? results : []).forEach((r) => {
         if (r.has_update) {
           map[r.image] = true;
         }
@@ -182,7 +184,10 @@ export const App: React.FC = () => {
     }
   };
 
-  const currentHost = hosts.find((h) => h.id === selectedHostId);
+  const hostList = Array.isArray(hosts) ? hosts : [];
+  const containerList = Array.isArray(containers) ? containers : [];
+  const stackList = Array.isArray(stacks) ? stacks : [];
+  const currentHost = hostList.find((h) => h.id === selectedHostId);
 
   if (authNeeded) {
     return (
@@ -226,10 +231,10 @@ export const App: React.FC = () => {
                 onChange={(e) => setSelectedHostId(e.target.value)}
                 className="rounded-lg bg-slate-800/90 border border-slate-700 py-1.5 pl-3 pr-8 text-xs font-semibold text-slate-200 focus:outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer"
               >
-                {hosts.length === 0 ? (
+                {hostList.length === 0 ? (
                   <option value="">No servers added</option>
                 ) : (
-                  hosts.map((h) => (
+                  hostList.map((h) => (
                     <option key={h.id} value={h.id}>
                       {h.name} ({h.driver.toUpperCase()} &bull; {h.status})
                     </option>
@@ -301,7 +306,7 @@ export const App: React.FC = () => {
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6 space-y-6">
-        {hosts.length === 0 ? (
+        {hostList.length === 0 ? (
           <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-10 text-center max-w-xl mx-auto my-12 shadow-2xl">
             <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-sky-500/10 border border-sky-500/20 text-sky-400 mx-auto mb-4">
               <Server className="h-8 w-8" />
@@ -381,7 +386,7 @@ export const App: React.FC = () => {
               }`}
             >
               <Box className="w-4 h-4" />
-              Containers ({containers.length})
+              Containers ({containerList.length})
             </button>
             <button
               onClick={() => setViewMode('stacks')}
@@ -392,7 +397,7 @@ export const App: React.FC = () => {
               }`}
             >
               <Layers className="w-4 h-4" />
-              Compose Stacks ({stacks.length})
+              Compose Stacks ({stackList.length})
             </button>
           </div>
 
@@ -422,12 +427,12 @@ export const App: React.FC = () => {
         {/* Containers List View */}
         {viewMode === 'containers' && (
           <div className="space-y-3">
-            {containers.length === 0 ? (
+            {containerList.length === 0 ? (
               <div className="py-16 text-center text-slate-500 font-mono text-sm border border-dashed border-slate-800 rounded-xl">
                 No containers detected on this host.
               </div>
             ) : (
-              containers.map((c) => {
+              containerList.map((c) => {
                 const name = c.names[0]?.replace('/', '') || c.id.slice(0, 12);
                 const hasUpdate = updates[c.image] || false;
                 const isRunning = c.state === 'running';
@@ -471,11 +476,11 @@ export const App: React.FC = () => {
                       <div>
                         <span className="text-[10px] text-slate-500 block">CPU</span>
                         <div className="flex items-center gap-1.5">
-                          <span className="font-semibold">{c.cpu_pct.toFixed(1)}%</span>
+                          <span className="font-semibold">{(c.cpu_pct || 0).toFixed(1)}%</span>
                           <div className="w-16 bg-slate-800 h-1.5 rounded-full overflow-hidden">
                             <div
                               className="bg-sky-500 h-full rounded-full"
-                              style={{ width: `${Math.min(c.cpu_pct, 100)}%` }}
+                              style={{ width: `${Math.min(c.cpu_pct || 0, 100)}%` }}
                             />
                           </div>
                         </div>
@@ -484,15 +489,15 @@ export const App: React.FC = () => {
                       <div>
                         <span className="text-[10px] text-slate-500 block">MEM</span>
                         <span className="font-semibold">
-                          {c.memory_mb.toFixed(0)} MB{' '}
-                          <span className="text-slate-500">({c.memory_pct.toFixed(0)}%)</span>
+                          {(c.memory_mb || 0).toFixed(0)} MB{' '}
+                          <span className="text-slate-500">({(c.memory_pct || 0).toFixed(0)}%)</span>
                         </span>
                       </div>
 
                       <div>
                         <span className="text-[10px] text-slate-500 block">NET I/O</span>
                         <span>
-                          {c.net_input_mb.toFixed(1)}M / {c.net_output_mb.toFixed(1)}M
+                          {(c.net_input_mb || 0).toFixed(1)}M / {(c.net_output_mb || 0).toFixed(1)}M
                         </span>
                       </div>
                     </div>
@@ -560,14 +565,14 @@ export const App: React.FC = () => {
         {/* Compose Stacks View */}
         {viewMode === 'stacks' && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {stacks.length === 0 ? (
+            {stackList.length === 0 ? (
               <div className="col-span-2 py-16 text-center text-slate-500 font-mono text-sm border border-dashed border-slate-800 rounded-xl">
-                No Compose stacks discovered. Click "Scan Directory" to find stacks in {currentHost?.base_dir}.
+                No Compose stacks discovered. Click "Scan Directory" to find stacks in {currentHost?.base_dir || '~/docker'}.
               </div>
             ) : (
-              stacks.map((s) => {
-                const stackContainers = containers.filter((c) => c.stack === s.name);
-                const runningCount = stackContainers.filter((c) => c.state === 'running').length;
+              stackList.map((s) => {
+                const stackContainers = containerList.filter((c) => c && c.stack === s.name);
+                const runningCount = stackContainers.filter((c) => c && c.state === 'running').length;
 
                 return (
                   <div
@@ -605,7 +610,7 @@ export const App: React.FC = () => {
                               key={sc.id}
                               className="rounded bg-slate-800/80 border border-slate-700/60 px-2 py-1 text-xs font-mono text-slate-300"
                             >
-                              {sc.service || sc.names[0]?.replace('/', '')}
+                              {sc.service || (sc.names && sc.names[0] ? sc.names[0].replace('/', '') : sc.id?.slice(0, 12))}
                             </span>
                           ))}
                         </div>
@@ -701,7 +706,7 @@ export const App: React.FC = () => {
         <NetworksModal
           hostId={selectedHostId}
           hostName={currentHost?.name || ''}
-          containers={containers}
+          containers={containerList}
           onClose={() => setShowNetworks(false)}
         />
       )}
@@ -727,7 +732,7 @@ export const App: React.FC = () => {
       {showDeployAgent && (
         <DeployAgentModal
           onClose={() => setShowDeployAgent(false)}
-          hosts={hosts}
+          hosts={hostList}
         />
       )}
     </div>
