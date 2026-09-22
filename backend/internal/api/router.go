@@ -80,11 +80,16 @@ func (s *Server) SetupRouter() *gin.Engine {
 	// Remote Agent WebSocket listener
 	r.GET("/ws/agent", s.handleAgentWS)
 
+	// Public one-line installer script & compose template
+	r.GET("/install-agent.sh", s.handleInstallAgentScript)
+	r.GET("/docker-compose.agent.yml", s.handleAgentComposeTemplate)
+
 	// Protected API endpoints
 	api := r.Group("/api")
 	api.Use(auth.AuthMiddleware(s.cfg, s.db))
 	{
 		api.GET("/auth/me", s.handleMe)
+		api.GET("/agent/token", s.handleGetAgentToken)
 
 		// Hosts
 		api.GET("/hosts", s.handleListHosts)

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -274,4 +275,111 @@ func (s *Server) handleAgentWS(c *gin.Context) {
 		}
 	}
 	_ = session
+}
+
+func (s *Server) handleGetAgentToken(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"token": s.cfg.AgentSecret,
+	})
+}
+
+func (s *Server) handleInstallAgentScript(c *gin.Context) {
+	host := c.Request.Host
+	scheme := "ws"
+	httpScheme := "http"
+	if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
+		scheme = "wss"
+		httpScheme = "https"
+	}
+
+	token := c.DefaultQuery("token", s.cfg.AgentSecret)
+	hostID := c.DefaultQuery("id", "remote-node")
+
+	wsURL := fmt.Sprintf("%s://%s/ws/agent", scheme, host)
+	serverURL := fmt.Sprintf("%s://%s", httpScheme, host)
+
+	script := fmt.Sprintf(`#!/usr/bin/env bash
+set -e
+
+echo "======================================================"
+echo "      DockerPulse Agent One-Line Installer"
+echo "======================================================"
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "[Error] Docker is not installed on this host."
+  echo "Please install Docker and Docker Compose before running this installer."
+  exit 1
+fi
+
+HOST_ID="%s"
+TOKEN="%s"
+WS_URL="%s"
+SERVER_URL="%s"
+TARGET_DIR="$HOME/docker/dockerpulse-agent"
+
+echo "[DockerPulse] Setting up agent directory: $TARGET_DIR"
+mkdir -p "$TARGET_DIR"
+cd "$TARGET_DIR"
+
+echo "[DockerPulse] Writing docker-compose.yml..."
+cat << 'EOF' > docker-compose.yml
+services:
+  dockerpulse-agent:
+    image: dockerpulse/dockerpulse:latest
+    container_name: dockerpulse-agent
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOME}/docker:/root/docker
+    command: >
+      dockerpulse agent
+      --server %s
+      --token %s
+      --host-id %s
+      --base-dir /root/docker
+EOF
+
+echo "[DockerPulse] Starting DockerPulse agent..."
+docker compose up -d
+
+echo ""
+echo "======================================================"
+echo " DockerPulse Agent is now running!"
+echo " Host '%s' registered with: $SERVER_URL"
+echo "======================================================"
+`, hostID, token, wsURL, serverURL, wsURL, token, hostID, hostID)
+
+	c.Header("Content-Type", "text/x-shellscript; charset=utf-8")
+	c.String(http.StatusOK, script)
+}
+
+func (s *Server) handleAgentComposeTemplate(c *gin.Context) {
+	host := c.Request.Host
+	scheme := "ws"
+	if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
+		scheme = "wss"
+	}
+
+	token := c.DefaultQuery("token", s.cfg.AgentSecret)
+	hostID := c.DefaultQuery("id", "node-1")
+	wsURL := fmt.Sprintf("%s://%s/ws/agent", scheme, host)
+
+	template := fmt.Sprintf(`services:
+  dockerpulse-agent:
+    image: dockerpulse/dockerpulse:latest
+    container_name: dockerpulse-agent
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOME}/docker:/root/docker
+    command: >
+      dockerpulse agent
+      --server %s
+      --token %s
+      --host-id %s
+      --base-dir /root/docker
+`, wsURL, token, hostID)
+
+	c.Header("Content-Type", "text/yaml; charset=utf-8")
+	c.String(http.StatusOK, template)
 }

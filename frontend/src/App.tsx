@@ -19,7 +19,8 @@ import {
   Folder,
   Activity,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  Cpu
 } from 'lucide-react';
 import { api } from './api/client';
 import { Host, ContainerInfo, Stack, SystemInfo, User } from './types';
@@ -30,6 +31,7 @@ import { UpdateModal } from './components/UpdateModal';
 import { NetworksModal } from './components/NetworksModal';
 import { StorageModal } from './components/StorageModal';
 import { AddHostModal } from './components/AddHostModal';
+import { DeployAgentModal } from './components/DeployAgentModal';
 import { AuthModal } from './components/AuthModal';
 
 export const App: React.FC = () => {
@@ -57,6 +59,7 @@ export const App: React.FC = () => {
   const [showNetworks, setShowNetworks] = useState(false);
   const [showStorage, setShowStorage] = useState(false);
   const [showAddHost, setShowAddHost] = useState(false);
+  const [showDeployAgent, setShowDeployAgent] = useState(false);
 
   // Check auth status on boot
   useEffect(() => {
@@ -226,6 +229,14 @@ export const App: React.FC = () => {
             >
               <Plus className="w-3.5 h-3.5 text-sky-400" />
               Add Server
+            </button>
+
+            <button
+              onClick={() => setShowDeployAgent(true)}
+              className="flex items-center gap-1.5 rounded-lg bg-sky-600/10 hover:bg-sky-600/20 border border-sky-500/30 px-3 py-1.5 text-xs font-medium text-sky-400 transition-colors"
+            >
+              <Cpu className="w-3.5 h-3.5" />
+              Deploy Agent
             </button>
           </div>
 
@@ -667,6 +678,13 @@ export const App: React.FC = () => {
             setHosts((prev) => [...prev, newHost]);
             setSelectedHostId(newHost.id);
           }}
+        />
+      )}
+
+      {showDeployAgent && (
+        <DeployAgentModal
+          onClose={() => setShowDeployAgent(false)}
+          hosts={hosts}
         />
       )}
     </div>
