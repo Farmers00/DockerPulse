@@ -95,6 +95,7 @@ func (s *Server) SetupRouter() *gin.Engine {
 		api.GET("/hosts", s.handleListHosts)
 		api.POST("/hosts", s.handleCreateHost)
 		api.GET("/hosts/:id", s.handleGetHost)
+		api.PUT("/hosts/:id", s.handleUpdateHost)
 		api.DELETE("/hosts/:id", s.handleDeleteHost)
 		api.GET("/hosts/:id/system", s.handleGetSystemInfo)
 

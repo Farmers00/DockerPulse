@@ -116,6 +116,38 @@ func (s *Server) handleGetHost(c *gin.Context) {
 	c.JSON(http.StatusOK, host)
 }
 
+func (s *Server) handleUpdateHost(c *gin.Context) {
+	id := c.Param("id")
+	host, err := s.db.GetHost(id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Host not found"})
+		return
+	}
+
+	var req struct {
+		Name    string `json:"name"`
+		BaseDir string `json:"base_dir"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.Name != "" {
+		host.Name = req.Name
+	}
+	if req.BaseDir != "" {
+		host.BaseDir = req.BaseDir
+	}
+
+	if err := s.db.UpdateHost(host); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, host)
+}
+
 func (s *Server) handleDeleteHost(c *gin.Context) {
 	id := c.Param("id")
 	if err := s.db.DeleteHost(id); err != nil {

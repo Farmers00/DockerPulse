@@ -207,6 +207,14 @@ func (db *DB) CreateHost(h *Host) error {
 	return err
 }
 
+func (db *DB) UpdateHost(h *Host) error {
+	_, err := db.conn.Exec(
+		"UPDATE hosts SET name = ?, base_dir = ?, address = ?, port = ?, auth_token = ?, ssh_user = ?, ssh_key = ? WHERE id = ?",
+		h.Name, h.BaseDir, h.Address, h.Port, h.AuthToken, h.SSHUser, h.SSHKey, h.ID,
+	)
+	return err
+}
+
 func (db *DB) UpdateHostStatus(id, status string) error {
 	_, err := db.conn.Exec("UPDATE hosts SET status = ?, last_seen = ? WHERE id = ?", status, time.Now().UTC(), id)
 	return err

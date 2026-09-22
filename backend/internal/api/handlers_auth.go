@@ -33,6 +33,7 @@ func (s *Server) handleSetup(c *gin.Context) {
 	var req struct {
 		Username string `json:"username" binding:"required"`
 		Password string `json:"password" binding:"required"`
+		BaseDir  string `json:"base_dir"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Username and password required"})
@@ -54,6 +55,31 @@ func (s *Server) handleSetup(c *gin.Context) {
 	if err := s.db.CreateUser(user); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
 		return
+	}
+
+	// Seed or update Local Server with custom docker path if provided
+	baseDir := req.BaseDir
+	if baseDir == "" {
+		baseDir = "~/docker"
+	}
+	hosts, _ := s.db.ListHosts()
+	if len(hosts) == 0 {
+		localHost := &database.Host{
+			Name:    "Local Server",
+			Driver:  database.DriverSocket,
+			Address: "local",
+			BaseDir: baseDir,
+			Status:  "online",
+		}
+		_ = s.db.CreateHost(localHost)
+	} else if req.BaseDir != "" {
+		for i := range hosts {
+			if hosts[i].Driver == database.DriverSocket {
+				hosts[i].BaseDir = req.BaseDir
+				_ = s.db.UpdateHost(&hosts[i])
+				break
+			}
+		}
 	}
 
 	token, _ := auth.GenerateToken(user, s.cfg.JWTSecret)

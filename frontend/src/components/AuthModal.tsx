@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Lock, User as UserIcon, ShieldCheck } from 'lucide-react';
+import { Lock, User as UserIcon, ShieldCheck, Folder } from 'lucide-react';
 import { api } from '../api/client';
 import { User } from '../types';
 
@@ -12,6 +12,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isSetup, onSuccess }) => {
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [baseDir, setBaseDir] = useState('~/docker');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -27,7 +28,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isSetup, onSuccess }) => {
     try {
       setLoading(true);
       if (isSetup) {
-        const res = await api.setup({ username, password });
+        const res = await api.setup({ username, password, base_dir: baseDir.trim() || '~/docker' });
         localStorage.setItem('dockpulse_token', res.token);
         onSuccess(res.user);
       } else {
@@ -96,22 +97,44 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isSetup, onSuccess }) => {
           </div>
 
           {isSetup && (
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Confirm Password
-              </label>
-              <div className="relative">
-                <Lock className="w-4 h-4 absolute left-3 top-2.5 text-slate-500" />
-                <input
-                  type="password"
-                  required
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full rounded-lg bg-slate-800/80 border border-slate-700 py-2 pl-9 pr-3 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                />
+            <>
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Confirm Password
+                </label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 absolute left-3 top-2.5 text-slate-500" />
+                  <input
+                    type="password"
+                    required
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full rounded-lg bg-slate-800/80 border border-slate-700 py-2 pl-9 pr-3 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  />
+                </div>
               </div>
-            </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Docker Stacks Directory
+                </label>
+                <div className="relative">
+                  <Folder className="w-4 h-4 absolute left-3 top-2.5 text-sky-400" />
+                  <input
+                    type="text"
+                    required
+                    value={baseDir}
+                    onChange={(e) => setBaseDir(e.target.value)}
+                    placeholder="~/docker"
+                    className="w-full rounded-lg bg-slate-800/80 border border-slate-700 py-2 pl-9 pr-3 text-xs text-slate-100 placeholder-slate-500 font-mono focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  />
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Folder where your compose projects are stored (e.g. <span className="font-mono text-slate-300">~/docker</span> or <span className="font-mono text-slate-300">/opt/docker</span>).
+                </p>
+              </div>
+            </>
           )}
 
           <button

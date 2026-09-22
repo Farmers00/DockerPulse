@@ -20,7 +20,8 @@ import {
   Activity,
   CheckCircle2,
   AlertCircle,
-  Cpu
+  Cpu,
+  Settings
 } from 'lucide-react';
 import { api } from './api/client';
 import { Host, ContainerInfo, Stack, SystemInfo, User } from './types';
@@ -32,6 +33,7 @@ import { NetworksModal } from './components/NetworksModal';
 import { StorageModal } from './components/StorageModal';
 import { AddHostModal } from './components/AddHostModal';
 import { DeployAgentModal } from './components/DeployAgentModal';
+import { HostSettingsModal } from './components/HostSettingsModal';
 import { AuthModal } from './components/AuthModal';
 
 function matchesStack(c: ContainerInfo, s: Stack): boolean {
@@ -108,6 +110,8 @@ export const App: React.FC = () => {
   const [showStorage, setShowStorage] = useState(false);
   const [showAddHost, setShowAddHost] = useState(false);
   const [showDeployAgent, setShowDeployAgent] = useState(false);
+  const [showHostSettings, setShowHostSettings] = useState(false);
+  const [fleetStats, setFleetStats] = useState<Record<string, { running: number; total: number; updates: number }>>({});
 
   // Check auth status on boot
   useEffect(() => {
@@ -207,7 +211,7 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleCheckUpdates = async () => {
+  const handleCheckUpdates = async (silent = false) => {
     if (!selectedHostId) return;
     try {
       setCheckingUpdates(true);
@@ -220,11 +224,68 @@ export const App: React.FC = () => {
       });
       setUpdates(map);
     } catch (err: any) {
-      alert(err.message || 'Update check failed');
+      if (!silent) {
+        alert(err.message || 'Update check failed');
+      } else {
+        console.warn('Daily update check failed:', err);
+      }
     } finally {
       setCheckingUpdates(false);
     }
   };
+
+  // Sync fleetStats for current selected host
+  useEffect(() => {
+    if (!selectedHostId) return;
+    const running = containerList.filter((c) => c && c.state === 'running').length;
+    const updateCount = containerList.filter((c) => c && updates[c.image]).length;
+    setFleetStats((prev) => ({
+      ...prev,
+      [selectedHostId]: {
+        running,
+        total: containerList.length,
+        updates: updateCount,
+      },
+    }));
+  }, [selectedHostId, containers, updates]);
+
+  // Background fetch container counts for other fleet hosts
+  useEffect(() => {
+    if (hosts.length === 0) return;
+    hosts.forEach(async (h) => {
+      if (h.id === selectedHostId) return;
+      try {
+        const list = await api.listContainers(h.id);
+        if (Array.isArray(list)) {
+          const rCount = list.filter((c) => c && c.state === 'running').length;
+          setFleetStats((prev) => ({
+            ...prev,
+            [h.id]: {
+              running: rCount,
+              total: list.length,
+              updates: prev[h.id]?.updates || 0,
+            },
+          }));
+        }
+      } catch {
+        // host offline
+      }
+    });
+  }, [hosts]);
+
+  // Daily auto-update check per host on first visit each day
+  useEffect(() => {
+    if (!selectedHostId || loading) return;
+
+    const today = new Date().toISOString().slice(0, 10);
+    const key = `dockerpulse_daily_update_${selectedHostId}`;
+    const lastChecked = localStorage.getItem(key);
+
+    if (lastChecked !== today) {
+      localStorage.setItem(key, today);
+      handleCheckUpdates(true);
+    }
+  }, [selectedHostId, loading]);
 
   const handleContainerOp = async (cid: string, op: 'start' | 'stop' | 'restart' | 'remove') => {
     try {
@@ -300,6 +361,16 @@ export const App: React.FC = () => {
               </select>
             </div>
 
+            {currentHost && (
+              <button
+                onClick={() => setShowHostSettings(true)}
+                title="Server Settings"
+                className="flex items-center gap-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 p-2 text-xs font-medium text-slate-300 hover:text-sky-400 transition-colors"
+              >
+                <Settings className="w-3.5 h-3.5" />
+              </button>
+            )}
+
             <button
               onClick={() => setShowAddHost(true)}
               className="flex items-center gap-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors"
@@ -338,7 +409,7 @@ export const App: React.FC = () => {
             </button>
 
             <button
-              onClick={handleCheckUpdates}
+              onClick={() => handleCheckUpdates(false)}
               disabled={checkingUpdates || !selectedHostId}
               className="flex items-center gap-1.5 rounded-lg bg-sky-600/10 hover:bg-sky-600/20 border border-sky-500/30 px-3 py-1.5 text-xs font-medium text-sky-400 transition-colors disabled:opacity-50"
             >
@@ -360,6 +431,56 @@ export const App: React.FC = () => {
           </div>
         </div>
       </header>
+
+      {/* Fleet Overview Summary Bar */}
+      {hostList.length > 0 && (
+        <div className="border-b border-slate-800/80 bg-slate-900/40 backdrop-blur-sm py-2.5 px-4">
+          <div className="max-w-7xl mx-auto flex items-center justify-center gap-2.5 overflow-x-auto no-scrollbar">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 shrink-0 mr-1 hidden sm:inline-block">
+              Fleet:
+            </span>
+            {hostList.map((h) => {
+              const isSelected = h.id === selectedHostId;
+              const stats = fleetStats[h.id];
+              const isOnline = h.status === 'online';
+
+              return (
+                <button
+                  key={h.id}
+                  onClick={() => setSelectedHostId(h.id)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-mono transition-all shrink-0 ${
+                    isSelected
+                      ? 'border-sky-500/60 bg-sky-950/40 text-sky-200 shadow-sm shadow-sky-500/10'
+                      : 'border-slate-800/80 bg-slate-900/60 text-slate-400 hover:border-slate-700 hover:text-slate-200 hover:bg-slate-800/50'
+                  }`}
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full shrink-0 ${
+                      isOnline
+                        ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50'
+                        : 'bg-slate-600'
+                    }`}
+                  />
+                  <span className="font-semibold font-sans">{h.name}</span>
+
+                  <span className="text-slate-600">&bull;</span>
+
+                  <span className={isSelected ? 'text-slate-200 font-semibold' : 'text-slate-400'}>
+                    {stats ? `${stats.running}/${stats.total} Running` : isOnline ? '...' : 'Offline'}
+                  </span>
+
+                  {stats && stats.updates > 0 && (
+                    <span className="flex items-center gap-1 rounded bg-amber-500/15 border border-amber-500/30 px-1.5 py-0.5 text-[10px] font-semibold text-amber-400">
+                      <ArrowUpCircle className="w-3 h-3" />
+                      {stats.updates} {stats.updates === 1 ? 'update' : 'updates'}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6 space-y-6">
@@ -799,6 +920,28 @@ export const App: React.FC = () => {
           hosts={hostList}
           onRefreshHosts={loadHosts}
           onSelectHost={(id) => setSelectedHostId(id)}
+        />
+      )}
+
+      {showHostSettings && currentHost && (
+        <HostSettingsModal
+          host={currentHost}
+          onClose={() => setShowHostSettings(false)}
+          onUpdated={(updated) => {
+            setHosts((prev) => prev.map((h) => (h.id === updated.id ? updated : h)));
+            // Trigger stack discovery for updated path
+            api.discoverStacks(updated.id).then((disc) => {
+              if (Array.isArray(disc)) setStacks(disc);
+            }).catch(() => {});
+          }}
+          onDeleted={(delId) => {
+            setHosts((prev) => {
+              const next = prev.filter((h) => h.id !== delId);
+              if (next.length > 0) setSelectedHostId(next[0].id);
+              else setSelectedHostId('');
+              return next;
+            });
+          }}
         />
       )}
     </div>

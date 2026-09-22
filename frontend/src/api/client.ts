@@ -28,7 +28,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 export const api = {
   // Auth
   getAuthStatus: () => request<{ initialized: boolean }>('/auth/status'),
-  setup: (data: { username: string; password: string }) =>
+  setup: (data: { username: string; password: string; base_dir?: string }) =>
     request<{ token: string; user: User }>('/auth/setup', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -45,6 +45,11 @@ export const api = {
   createHost: (data: Partial<Host> & { ssh_key?: string; auth_token?: string }) =>
     request<Host>('/hosts', {
       method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateHost: (id: string, data: { name?: string; base_dir?: string }) =>
+    request<Host>(`/hosts/${id}`, {
+      method: 'PUT',
       body: JSON.stringify(data),
     }),
   getHost: (id: string) => request<Host>(`/hosts/${id}`),
