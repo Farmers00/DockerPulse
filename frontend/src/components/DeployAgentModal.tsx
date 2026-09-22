@@ -84,7 +84,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - \${HOME}/docker:/root/docker
     command: >
-      dockerpulse agent
+      agent
       --server ${wsURL}
       --token ${agentToken}
       --host-id ${nodeName}

@@ -16,6 +16,11 @@ import (
 )
 
 func main() {
+	// If the container entrypoint already invoked 'dockerpulse' and the command also starts with 'dockerpulse', strip it
+	if len(os.Args) >= 2 && (os.Args[1] == "dockerpulse" || os.Args[1] == "/dockerpulse" || os.Args[1] == "/usr/local/bin/dockerpulse") {
+		os.Args = append(os.Args[:1], os.Args[2:]...)
+	}
+
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)

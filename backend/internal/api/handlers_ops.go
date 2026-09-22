@@ -344,7 +344,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME}/docker:/root/docker
     command: >
-      dockerpulse agent
+      agent
       --server %s
       --token %s
       --host-id %s
@@ -360,7 +360,7 @@ echo "======================================================"
 echo " DockerPulse Agent container is now running!"
 echo " Host '$HOST_ID' connected to $SERVER_URL"
 echo "======================================================"
-`, hostID, token, wsURL, serverURL, wsURL, token, hostID, hostID)
+`, hostID, token, wsURL, serverURL, wsURL, token, hostID)
 
 	c.Header("Content-Type", "text/x-shellscript; charset=utf-8")
 	c.String(http.StatusOK, script)
@@ -386,7 +386,7 @@ func (s *Server) handleAgentComposeTemplate(c *gin.Context) {
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME}/docker:/root/docker
     command: >
-      dockerpulse agent
+      agent
       --server %s
       --token %s
       --host-id %s

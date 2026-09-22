@@ -9,7 +9,7 @@ services:
       # Host compose directory to manage (~/docker on host)
       - ${HOME}/docker:/root/docker
     command: >
-      dockerpulse agent
+      agent
       --server ws://manager-ip-or-domain:8080/ws/agent
       --token dockerpulse_agent_shared_join_token_2026
       --host-id node-1
