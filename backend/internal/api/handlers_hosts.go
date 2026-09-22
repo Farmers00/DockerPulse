@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -15,6 +16,24 @@ func (s *Server) handleListHosts(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	// Auto-seed Local Server if no hosts exist yet
+	if len(hosts) == 0 {
+		baseDir := "~/docker"
+		if _, err := os.Stat("/root/docker"); err == nil {
+			baseDir = "/root/docker"
+		}
+		localHost := &database.Host{
+			Name:    "Local Server",
+			Driver:  database.DriverSocket,
+			Address: "local",
+			BaseDir: baseDir,
+			Status:  "online",
+		}
+		if err := s.db.CreateHost(localHost); err == nil {
+			hosts = append(hosts, *localHost)
+		}
 	}
 
 	// Concurrently ping each host to update status

@@ -88,11 +88,26 @@ export const App: React.FC = () => {
     try {
       const list = await api.listHosts();
       setHosts(list);
-      if (list.length > 0 && !selectedHostId) {
-        setSelectedHostId(list[0].id);
+      if (list.length > 0) {
+        setSelectedHostId((prev) => prev || list[0].id);
       }
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const handleConnectLocal = async () => {
+    try {
+      const created = await api.createHost({
+        name: 'Local Server',
+        driver: 'socket',
+        address: 'local',
+        base_dir: '~/docker',
+      });
+      setHosts([created]);
+      setSelectedHostId(created.id);
+    } catch (err: any) {
+      alert(err.message || 'Failed to connect local host');
     }
   };
 
@@ -286,8 +301,34 @@ export const App: React.FC = () => {
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6 space-y-6">
-        {/* Host Banner & Telemetry Bar */}
-        {currentHost && (
+        {hosts.length === 0 ? (
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-10 text-center max-w-xl mx-auto my-12 shadow-2xl">
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-sky-500/10 border border-sky-500/20 text-sky-400 mx-auto mb-4">
+              <Server className="h-8 w-8" />
+            </div>
+            <h3 className="text-xl font-bold text-slate-100">Welcome to DockerPulse!</h3>
+            <p className="text-xs text-slate-400 mt-2 max-w-md mx-auto leading-relaxed">
+              No Docker servers are connected yet. Click below to connect this local machine's Docker daemon, or deploy an agent to a remote node.
+            </p>
+            <div className="flex items-center justify-center gap-3 mt-6">
+              <button
+                onClick={handleConnectLocal}
+                className="flex items-center gap-2 rounded-lg bg-sky-600 hover:bg-sky-500 px-5 py-2.5 text-xs font-semibold text-white shadow-lg shadow-sky-600/20 transition-all"
+              >
+                <Server className="w-4 h-4" /> Connect Local Server
+              </button>
+              <button
+                onClick={() => setShowDeployAgent(true)}
+                className="flex items-center gap-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 px-5 py-2.5 text-xs font-semibold text-slate-200 transition-colors"
+              >
+                <Cpu className="w-4 h-4 text-sky-400" /> Deploy Remote Agent
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Host Banner & Telemetry Bar */}
+            {currentHost && (
           <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 shadow-lg flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <div
@@ -611,6 +652,8 @@ export const App: React.FC = () => {
               })
             )}
           </div>
+        )}
+          </>
         )}
       </main>
 
