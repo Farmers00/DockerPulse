@@ -734,8 +734,7 @@ func (d *SocketDriver) WriteStackFiles(ctx context.Context, stackPath string, co
 		return err
 	}
 
-	sanitizedCompose, _, _, _ := sanitizeComposeContent(composeContent)
-	if err := os.WriteFile(composeFile, []byte(sanitizedCompose), 0644); err != nil {
+	if err := os.WriteFile(composeFile, []byte(composeContent), 0644); err != nil {
 		return fmt.Errorf("failed to write compose file: %w", err)
 	}
 
@@ -770,9 +769,10 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 	projectName := sanitizeComposeName(filepath.Base(hostPath))
 	envFile := filepath.Join(containerPath, ".env")
 
-	// Ensure top-level 'name:' complies with Compose v2 project naming specification (pattern '^[a-z0-9][a-z0-9_-]*$')
-	if sanitized, oldName, newName := sanitizeComposeFile(composeFile); sanitized {
-		fmt.Fprintf(writer, "[DockPulse] Auto-sanitized top-level 'name: %s' -> 'name: %s' in %s to comply with Docker Compose v2 specification\n", oldName, newName, filepath.Base(composeFile))
+	// Detect top-level 'name:' issues and notify user, without automatically modifying user files
+	if hasIssue, oldName, proposedName := detectComposeNameIssue(composeFile); hasIssue {
+		fmt.Fprintf(writer, "[DockPulse] WARNING: Top-level 'name: %s' in %s violates Docker Compose v2 naming rules (pattern '^[a-z0-9][a-z0-9_-]*$').\n", oldName, filepath.Base(composeFile))
+		fmt.Fprintf(writer, "[DockPulse] Suggested fix: 'name: %s'. You can apply this fix or edit the file in DockerPulse.\n", proposedName)
 	}
 
 	switch action {
@@ -1002,17 +1002,12 @@ func sanitizeComposeContent(content string) (newContent string, modified bool, o
 	return newContent, true, val, sanitized
 }
 
-func sanitizeComposeFile(filePath string) (bool, string, string) {
+func detectComposeNameIssue(filePath string) (hasIssue bool, oldName string, proposedName string) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return false, "", ""
 	}
-	newContent, modified, oldName, newName := sanitizeComposeContent(string(data))
-	if !modified {
-		return false, "", ""
-	}
-	if err := os.WriteFile(filePath, []byte(newContent), 0644); err != nil {
-		return false, "", ""
-	}
-	return true, oldName, newName
+	_, hasIssue, oldName, proposedName = sanitizeComposeContent(string(data))
+	return hasIssue, oldName, proposedName
 }
+

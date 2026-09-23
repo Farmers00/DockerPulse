@@ -88,6 +88,24 @@ export const ComposeEditorModal: React.FC<ComposeEditorModalProps> = ({
     }
   };
 
+  // Check for Docker Compose v2 specification issue in composeContent
+  const nameIssue = (() => {
+    if (!composeContent) return null;
+    const m = composeContent.match(/^name\s*:\s*(.+)$/m);
+    if (!m) return null;
+    const raw = m[1].split('#')[0].trim().replace(/^['"]|['"]$/g, '');
+    if (!raw || /^[a-z0-9][a-z0-9_-]*$/.test(raw)) return null;
+    const proposed = raw
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+    return {
+      oldName: raw,
+      proposedName: proposed || 'stack',
+    };
+  })();
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
       <div className="relative w-full max-w-5xl h-[90vh] flex flex-col rounded-xl border border-slate-800 bg-slate-900 shadow-2xl overflow-hidden">
@@ -191,6 +209,33 @@ export const ComposeEditorModal: React.FC<ComposeEditorModalProps> = ({
             </div>
           )}
         </div>
+
+        {/* Specification Warning Banner (Proposes Fix to User) */}
+        {nameIssue && activeTab === 'compose' && (
+          <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-2.5 bg-amber-500/10 border-b border-amber-500/20 text-xs shrink-0">
+            <div className="flex items-center gap-2 text-amber-300">
+              <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
+              <span>
+                Top-level <code className="bg-slate-900/80 px-1 py-0.5 rounded font-mono font-semibold">name: {nameIssue.oldName}</code> contains spaces or characters that Docker Compose v2 will reject (<code className="text-slate-400">^[a-z0-9][a-z0-9_-]*$</code>).
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setComposeContent((prev) =>
+                  prev.replace(/(^name\s*:\s*)(.+)$/m, `$1${nameIssue.proposedName}`)
+                );
+                setNotification({
+                  message: `Proposed fix applied to editor. Click Save to persist.`,
+                  type: 'success',
+                });
+              }}
+              className="px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/30 font-medium transition-colors cursor-pointer"
+            >
+              Suggested Fix: change to <span className="font-mono font-semibold text-emerald-400">"{nameIssue.proposedName}"</span>
+            </button>
+          </div>
+        )}
 
         {/* Main Content Area */}
         <div className="flex-1 overflow-hidden relative">

@@ -944,6 +944,11 @@ export const App: React.FC = () => {
           stackName={updateAction.stack.name}
           action={updateAction.action}
           onClose={() => setUpdateAction(null)}
+          onOpenEditor={() => {
+            const st = updateAction.stack;
+            setUpdateAction(null);
+            setEditStack(st);
+          }}
           onFinished={() => {
             refreshHostData();
             handleCheckUpdates(true);
