@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { X, RefreshCw, CheckCircle, AlertCircle, AlertTriangle, FileCode } from 'lucide-react';
 import { api } from '../api/client';
 
@@ -26,10 +26,16 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [detectedIssue, setDetectedIssue] = useState<{ oldName: string; proposedName: string } | null>(null);
   const [applyingFix, setApplyingFix] = useState(false);
-  const endRef = useRef<HTMLDivElement>(null);
 
-  const runAction = useCallback(() => {
-    setOutput(`[DockerPulse] Initiating action '${action}' on stack '${stackName}'...\n`);
+  const endRef = useRef<HTMLDivElement>(null);
+  const outputRef = useRef<string>('');
+  const onFinishedRef = useRef(onFinished);
+  onFinishedRef.current = onFinished;
+
+  const startAction = () => {
+    const initMsg = `[DockerPulse] Initiating action '${action}' on stack '${stackName}'...\n`;
+    outputRef.current = initMsg;
+    setOutput(initMsg);
     setStatus('running');
     setErrorMsg('');
     setDetectedIssue(null);
@@ -39,61 +45,59 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
       stackId,
       action,
       (chunk) => {
-        setOutput((prev) => prev + chunk);
+        outputRef.current += chunk;
+        setOutput(outputRef.current);
       },
       (err) => {
         if (err) {
           setStatus('error');
           setErrorMsg(err.message);
+
+          const fullOutput = outputRef.current;
+          if (
+            fullOutput.includes("name Does not match pattern '^[a-z0-9][a-z0-9_-]*$'") ||
+            fullOutput.includes('violates Docker Compose v2 naming rules')
+          ) {
+            const matchOld = fullOutput.match(/Top-level 'name:\s*([^']+)'/);
+            const matchProposed = fullOutput.match(/Suggested fix: 'name:\s*([^']+)'/);
+            if (matchOld && matchProposed) {
+              setDetectedIssue({ oldName: matchOld[1], proposedName: matchProposed[1] });
+            } else {
+              api
+                .getStackFiles(hostId, stackId)
+                .then((files) => {
+                  const m = files.compose.match(/^name\s*:\s*(.+)$/m);
+                  if (m) {
+                    const raw = m[1].split('#')[0].trim().replace(/^['"]|['"]$/g, '');
+                    if (!/^[a-z0-9][a-z0-9_-]*$/.test(raw)) {
+                      const proposed = raw
+                        .toLowerCase()
+                        .replace(/[^a-z0-9_-]/g, '-')
+                        .replace(/-+/g, '-')
+                        .replace(/^-|-$/g, '');
+                      setDetectedIssue({ oldName: raw, proposedName: proposed || 'stack' });
+                    }
+                  }
+                })
+                .catch(() => {});
+            }
+          }
         } else {
           setStatus('success');
-          onFinished();
+          onFinishedRef.current?.();
         }
       }
     );
-  }, [hostId, stackId, action, stackName, onFinished]);
+  };
 
   useEffect(() => {
-    runAction();
-  }, [runAction]);
+    startAction();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [output]);
-
-  // Detect naming issues when an error occurs
-  useEffect(() => {
-    if (
-      status === 'error' &&
-      (output.includes("name Does not match pattern '^[a-z0-9][a-z0-9_-]*$'") ||
-        output.includes('violates Docker Compose v2 naming rules'))
-    ) {
-      const matchOld = output.match(/Top-level 'name:\s*([^']+)'/);
-      const matchProposed = output.match(/Suggested fix: 'name:\s*([^']+)'/);
-      if (matchOld && matchProposed) {
-        setDetectedIssue({ oldName: matchOld[1], proposedName: matchProposed[1] });
-      } else {
-        // Inspect compose file directly to find the invalid name and generate proposal
-        api
-          .getStackFiles(hostId, stackId)
-          .then((files) => {
-            const m = files.compose.match(/^name\s*:\s*(.+)$/m);
-            if (m) {
-              const raw = m[1].split('#')[0].trim().replace(/^['"]|['"]$/g, '');
-              if (!/^[a-z0-9][a-z0-9_-]*$/.test(raw)) {
-                const proposed = raw
-                  .toLowerCase()
-                  .replace(/[^a-z0-9_-]/g, '-')
-                  .replace(/-+/g, '-')
-                  .replace(/^-|-$/g, '');
-                setDetectedIssue({ oldName: raw, proposedName: proposed || 'stack' });
-              }
-            }
-          })
-          .catch(() => {});
-      }
-    }
-  }, [status, output, hostId, stackId]);
 
   const handleApplyFixAndRetry = async () => {
     if (!detectedIssue) return;
@@ -109,13 +113,10 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
         env: files.env,
         note: `Updated project name from '${detectedIssue.oldName}' to '${detectedIssue.proposedName}' (User Confirmed)`,
       });
-      setOutput(
-        (prev) =>
-          prev +
-          `\n[DockerPulse] Applied proposed fix: updated project name to '${detectedIssue.proposedName}'. Retrying ${action}...\n\n`
-      );
+      outputRef.current += `\n[DockerPulse] Applied proposed fix: updated project name to '${detectedIssue.proposedName}'. Retrying ${action}...\n\n`;
+      setOutput(outputRef.current);
       setDetectedIssue(null);
-      runAction();
+      startAction();
     } catch (err: any) {
       alert(err.message || 'Failed to apply proposed fix');
     } finally {
