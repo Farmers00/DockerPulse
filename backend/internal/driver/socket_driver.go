@@ -716,9 +716,10 @@ func (d *SocketDriver) DiscoverStacks(ctx context.Context, baseDir string) ([]Di
 			}
 
 			hostDirPath := d.ToHostPath(ctx, containerDirPath)
+			stackName := getComposeProjectName(composeFile, hostDirPath)
 
 			stacks = append(stacks, DiscoveredStack{
-				Name:        entry.Name(),
+				Name:        stackName,
 				Path:        hostDirPath,
 				ComposeFile: filepath.Base(composeFile),
 				HasEnvFile:  hasEnv,
@@ -788,7 +789,7 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 		return fmt.Errorf("no compose file found in %s", stackPath)
 	}
 
-	projectName := sanitizeComposeName(filepath.Base(hostPath))
+	projectName := getComposeProjectName(composeFile, hostPath)
 	envFile := filepath.Join(containerPath, ".env")
 
 	// Detect top-level 'name:' issues and notify user, without automatically modifying user files
@@ -991,7 +992,9 @@ func sanitizeComposeName(raw string) string {
 	for _, r := range raw {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
 			b.WriteRune(r)
-		} else if r == '-' || r == '_' || r == ' ' || r == '.' {
+		} else if r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else if r == ' ' || r == '.' {
 			if b.Len() > 0 {
 				last := b.String()[b.Len()-1]
 				if last != '-' && last != '_' {
@@ -1005,6 +1008,29 @@ func sanitizeComposeName(raw string) string {
 		return "stack"
 	}
 	return res
+}
+
+func getComposeProjectName(composeFile string, hostPath string) string {
+	if composeFile != "" {
+		if data, err := os.ReadFile(composeFile); err == nil {
+			loc := topLevelNameRegex.FindStringSubmatchIndex(string(data))
+			if len(loc) >= 4 {
+				valWithComment := string(data)[loc[2]:loc[3]]
+				val := strings.TrimSpace(strings.Split(valWithComment, "#")[0])
+				val = strings.Trim(val, `"'`)
+				if val != "" {
+					if validComposeNameRegex.MatchString(val) {
+						return val
+					}
+					sanitized := sanitizeComposeName(val)
+					if sanitized != "" {
+						return sanitized
+					}
+				}
+			}
+		}
+	}
+	return sanitizeComposeName(filepath.Base(hostPath))
 }
 
 func sanitizeComposeContent(content string) (newContent string, modified bool, oldName string, newName string) {

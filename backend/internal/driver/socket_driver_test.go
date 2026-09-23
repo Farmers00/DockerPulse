@@ -2,6 +2,8 @@ package driver
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -147,3 +149,34 @@ func TestSanitizeCompose(t *testing.T) {
 		})
 	}
 }
+
+func TestGetComposeProjectName(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// 1. Compose file with name: ollama-stack
+	f1 := filepath.Join(tmpDir, "compose1.yml")
+	_ = os.WriteFile(f1, []byte("name: ollama-stack\nservices:\n  app:\n    image: test\n"), 0644)
+	if got := getComposeProjectName(f1, "/home/user/docker/ollama"); got != "ollama-stack" {
+		t.Errorf("getComposeProjectName() = %q; want 'ollama-stack'", got)
+	}
+
+	// 2. Compose file with name: ollama stack (unquoted space)
+	f2 := filepath.Join(tmpDir, "compose2.yml")
+	_ = os.WriteFile(f2, []byte("name: ollama stack\nservices:\n  app:\n    image: test\n"), 0644)
+	if got := getComposeProjectName(f2, "/home/user/docker/ollama"); got != "ollama-stack" {
+		t.Errorf("getComposeProjectName() = %q; want 'ollama-stack'", got)
+	}
+
+	// 3. Compose file without name:
+	f3 := filepath.Join(tmpDir, "compose3.yml")
+	_ = os.WriteFile(f3, []byte("services:\n  app:\n    image: test\n"), 0644)
+	if got := getComposeProjectName(f3, "/home/user/docker/my-app"); got != "my-app" {
+		t.Errorf("getComposeProjectName() = %q; want 'my-app'", got)
+	}
+
+	// 4. Non-existent compose file falls back to host path base
+	if got := getComposeProjectName("", "/home/user/docker/web_server"); got != "web_server" {
+		t.Errorf("getComposeProjectName() = %q; want 'web_server'", got)
+	}
+}
+
