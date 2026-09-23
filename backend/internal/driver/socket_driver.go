@@ -127,6 +127,28 @@ func (d *SocketDriver) ListContainers(ctx context.Context) ([]ContainerInfo, err
 
 	result := make([]ContainerInfo, 0, len(raw))
 	for _, c := range raw {
+		// Identify internal DockerPulse updater helper containers
+		isInternalHelper := c.Labels["com.dockerpulse.helper"] == "true" || strings.Contains(c.Command, "sleep 2 && docker compose")
+		if !isInternalHelper {
+			for _, name := range c.Names {
+				trimmed := strings.TrimPrefix(name, "/")
+				if strings.HasPrefix(trimmed, "dockerpulse-updater") {
+					isInternalHelper = true
+					break
+				}
+			}
+		}
+
+		if isInternalHelper {
+			// If it's done or stuck in created/exited/dead state, asynchronously clean it up
+			if c.State == "created" || c.State == "exited" || c.State == "dead" {
+				go func(cid string) {
+					_ = d.client.Delete(context.Background(), fmt.Sprintf("/containers/%s?force=true", cid))
+				}(c.ID)
+			}
+			continue
+		}
+
 		displayImage := c.Image
 		if strings.HasPrefix(displayImage, "sha256:") || displayImage == "" {
 			if composeImg := c.Labels["com.docker.compose.image"]; composeImg != "" && !strings.HasPrefix(composeImg, "sha256:") {
@@ -797,7 +819,12 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 				hostPath,
 				composeSubCmd,
 			)
+			// Ensure any previous helper container with this name is removed first
+			_ = exec.Command("docker", "rm", "-f", "dockerpulse-updater-helper").Run()
+
 			runnerCmd := exec.Command("docker", "run", "--rm", "-d",
+				"--name", "dockerpulse-updater-helper",
+				"--label", "com.dockerpulse.helper=true",
 				"--entrypoint", "sh",
 				"-v", "/var/run/docker.sock:/var/run/docker.sock",
 				"--volumes-from", selfRef,
@@ -807,18 +834,25 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 			)
 
 			out, err := runnerCmd.CombinedOutput()
-			if err != nil && selfRef != "dockerpulse-agent" {
-				runnerCmd2 := exec.Command("docker", "run", "--rm", "-d",
-					"--entrypoint", "sh",
-					"-v", "/var/run/docker.sock:/var/run/docker.sock",
-					"--volumes-from", "dockerpulse-agent",
-					"-w", containerPath,
-					"ghcr.io/farmers00/dockerpulse:latest",
-					"-c", cmdScript,
-				)
-				if out2, err2 := runnerCmd2.CombinedOutput(); err2 == nil {
-					out = out2
-					err = nil
+			if err != nil {
+				_ = exec.Command("docker", "rm", "-f", "dockerpulse-updater-helper").Run()
+				if selfRef != "dockerpulse-agent" {
+					runnerCmd2 := exec.Command("docker", "run", "--rm", "-d",
+						"--name", "dockerpulse-updater-helper",
+						"--label", "com.dockerpulse.helper=true",
+						"--entrypoint", "sh",
+						"-v", "/var/run/docker.sock:/var/run/docker.sock",
+						"--volumes-from", "dockerpulse-agent",
+						"-w", containerPath,
+						"ghcr.io/farmers00/dockerpulse:latest",
+						"-c", cmdScript,
+					)
+					if out2, err2 := runnerCmd2.CombinedOutput(); err2 == nil {
+						out = out2
+						err = nil
+					} else {
+						_ = exec.Command("docker", "rm", "-f", "dockerpulse-updater-helper").Run()
+					}
 				}
 			}
 
