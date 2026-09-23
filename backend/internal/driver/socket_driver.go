@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -733,7 +734,8 @@ func (d *SocketDriver) WriteStackFiles(ctx context.Context, stackPath string, co
 		return err
 	}
 
-	if err := os.WriteFile(composeFile, []byte(composeContent), 0644); err != nil {
+	sanitizedCompose, _, _, _ := sanitizeComposeContent(composeContent)
+	if err := os.WriteFile(composeFile, []byte(sanitizedCompose), 0644); err != nil {
 		return fmt.Errorf("failed to write compose file: %w", err)
 	}
 
@@ -765,8 +767,13 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 		return fmt.Errorf("no compose file found in %s", stackPath)
 	}
 
-	projectName := filepath.Base(hostPath)
+	projectName := sanitizeComposeName(filepath.Base(hostPath))
 	envFile := filepath.Join(containerPath, ".env")
+
+	// Ensure top-level 'name:' complies with Compose v2 project naming specification (pattern '^[a-z0-9][a-z0-9_-]*$')
+	if sanitized, oldName, newName := sanitizeComposeFile(composeFile); sanitized {
+		fmt.Fprintf(writer, "[DockPulse] Auto-sanitized top-level 'name: %s' -> 'name: %s' in %s to comply with Docker Compose v2 specification\n", oldName, newName, filepath.Base(composeFile))
+	}
 
 	switch action {
 	case "up", "restart":
@@ -934,4 +941,75 @@ func cleanDigest(d string) string {
 		return d[idx+7:]
 	}
 	return strings.TrimPrefix(d, "sha256:")
+}
+
+var (
+	validComposeNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	topLevelNameRegex     = regexp.MustCompile(`(?m)^name\s*:\s*(.+)$`)
+)
+
+func sanitizeComposeName(raw string) string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.Trim(raw, `"'`)
+	raw = strings.ToLower(raw)
+
+	var b strings.Builder
+	for _, r := range raw {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else if r == '-' || r == '_' || r == ' ' || r == '.' {
+			if b.Len() > 0 {
+				b.WriteByte('-')
+			}
+		}
+	}
+	res := strings.Trim(b.String(), "-_")
+	if res == "" || !((res[0] >= 'a' && res[0] <= 'z') || (res[0] >= '0' && res[0] <= '9')) {
+		return "stack"
+	}
+	return res
+}
+
+func sanitizeComposeContent(content string) (newContent string, modified bool, oldName string, newName string) {
+	loc := topLevelNameRegex.FindStringSubmatchIndex(content)
+	if len(loc) < 4 {
+		return content, false, "", ""
+	}
+
+	valWithComment := content[loc[2]:loc[3]]
+	val := strings.TrimSpace(strings.Split(valWithComment, "#")[0])
+	val = strings.Trim(val, `"'`)
+
+	if validComposeNameRegex.MatchString(val) {
+		return content, false, "", ""
+	}
+
+	sanitized := sanitizeComposeName(val)
+	fullMatch := content[loc[0]:loc[1]]
+	lineEnding := ""
+	if strings.HasSuffix(fullMatch, "\r") {
+		lineEnding = "\r"
+	}
+	comment := ""
+	if hashIdx := strings.Index(valWithComment, "#"); hashIdx != -1 {
+		comment = " " + strings.TrimSpace(valWithComment[hashIdx:])
+	}
+	newLine := "name: " + sanitized + comment + lineEnding
+	newContent = content[:loc[0]] + newLine + content[loc[1]:]
+	return newContent, true, val, sanitized
+}
+
+func sanitizeComposeFile(filePath string) (bool, string, string) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return false, "", ""
+	}
+	newContent, modified, oldName, newName := sanitizeComposeContent(string(data))
+	if !modified {
+		return false, "", ""
+	}
+	if err := os.WriteFile(filePath, []byte(newContent), 0644); err != nil {
+		return false, "", ""
+	}
+	return true, oldName, newName
 }
