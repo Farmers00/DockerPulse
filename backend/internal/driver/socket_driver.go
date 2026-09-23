@@ -789,13 +789,20 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 		return fmt.Errorf("no compose file found in %s", stackPath)
 	}
 
-	projectName := getComposeProjectName(composeFile, hostPath)
 	envFile := filepath.Join(containerPath, ".env")
 
 	// Detect top-level 'name:' issues and notify user, without automatically modifying user files
 	if hasIssue, oldName, proposedName := detectComposeNameIssue(composeFile); hasIssue {
 		fmt.Fprintf(writer, "[DockPulse] WARNING: Top-level 'name: %s' in %s violates Docker Compose v2 naming rules (pattern '^[a-z0-9][a-z0-9_-]*$').\n", oldName, filepath.Base(composeFile))
 		fmt.Fprintf(writer, "[DockPulse] Suggested fix: 'name: %s'. You can apply this fix or edit the file in DockerPulse.\n", proposedName)
+	}
+
+	baseArgs := []string{"compose", "-f", composeFile}
+	if fileExists(envFile) {
+		baseArgs = append(baseArgs, "--env-file", envFile)
+	}
+	if hostPath != "" {
+		baseArgs = append(baseArgs, "--project-directory", hostPath)
 	}
 
 	switch action {
@@ -814,8 +821,7 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 				composeSubCmd = "restart"
 			}
 
-			cmdScript := fmt.Sprintf("sleep 2 && docker compose -p %s -f %s --project-directory %s %s",
-				projectName,
+			cmdScript := fmt.Sprintf("sleep 2 && docker compose -f %s --project-directory %s %s",
 				composeFile,
 				hostPath,
 				composeSubCmd,
@@ -871,40 +877,20 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 			fmt.Fprintf(writer, "[DockPulse] Detached runner failed (%v: %s), falling back to direct compose\n", err, strings.TrimSpace(string(out)))
 		}
 
-		args := []string{"compose", "-p", projectName, "-f", composeFile}
-		if fileExists(envFile) {
-			args = append(args, "--env-file", envFile)
+		args := append([]string{}, baseArgs...)
+		if action == "restart" {
+			args = append(args, "restart")
+		} else {
+			args = append(args, "up", "-d")
 		}
-		if hostPath != "" {
-			args = append(args, "--project-directory", hostPath)
-		}
-		args = append(args, action)
-		if action == "up" {
-			args = append(args, "-d")
-		}
-
 		return d.runComposeCmd(ctx, containerPath, args, writer)
 
 	case "down":
-		args := []string{"compose", "-p", projectName, "-f", composeFile}
-		if fileExists(envFile) {
-			args = append(args, "--env-file", envFile)
-		}
-		if hostPath != "" {
-			args = append(args, "--project-directory", hostPath)
-		}
-		args = append(args, "down")
+		args := append(append([]string{}, baseArgs...), "down")
 		return d.runComposeCmd(ctx, containerPath, args, writer)
 
 	case "pull":
-		args := []string{"compose", "-p", projectName, "-f", composeFile}
-		if fileExists(envFile) {
-			args = append(args, "--env-file", envFile)
-		}
-		if hostPath != "" {
-			args = append(args, "--project-directory", hostPath)
-		}
-		args = append(args, "pull")
+		args := append(append([]string{}, baseArgs...), "pull")
 		return d.runComposeCmd(ctx, containerPath, args, writer)
 
 	case "pull_up":
