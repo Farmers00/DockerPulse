@@ -223,10 +223,23 @@ export const App: React.FC = () => {
       setScanning(true);
       const discovered = await api.discoverStacks(selectedHostId);
       setStacks(Array.isArray(discovered) ? discovered : []);
+      loadHosts();
     } catch (err: any) {
       alert(err.message || 'Discovery failed');
     } finally {
       setScanning(false);
+    }
+  };
+
+  const handleDeleteStack = async (s: Stack) => {
+    if (!window.confirm(`Remove stack "${s.name}" from DockerPulse? (Files on disk will not be deleted)`)) {
+      return;
+    }
+    try {
+      await api.deleteStack(selectedHostId, s.id);
+      refreshHostData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to remove stack');
     }
   };
 
@@ -896,6 +909,14 @@ export const App: React.FC = () => {
                         title="Stop Stack (Down)"
                       >
                         <Square className="w-3.5 h-3.5" />
+                      </button>
+
+                      <button
+                        onClick={() => handleDeleteStack(s)}
+                        className="flex items-center gap-1 rounded-lg bg-slate-800 hover:bg-rose-500/20 border border-slate-700 hover:border-rose-500/30 p-2 text-xs font-medium text-slate-400 hover:text-rose-400 transition-colors"
+                        title="Remove Stack from DockerPulse"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   </div>

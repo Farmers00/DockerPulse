@@ -113,6 +113,7 @@ func (s *Server) SetupRouter() *gin.Engine {
 		api.POST("/hosts/:id/stacks/discover", s.handleDiscoverStacks)
 		api.GET("/hosts/:id/stacks/:sid/files", s.handleGetStackFiles)
 		api.PUT("/hosts/:id/stacks/:sid/files", s.handleSaveStackFiles)
+		api.DELETE("/hosts/:id/stacks/:sid", s.handleDeleteStack)
 		api.POST("/hosts/:id/stacks/:sid/action", s.handleComposeAction)
 		api.GET("/hosts/:id/stacks/:sid/revisions", s.handleListRevisions)
 

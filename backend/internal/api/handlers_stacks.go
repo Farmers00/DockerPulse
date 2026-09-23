@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/dockpulse/dockmgr/internal/database"
+	"github.com/dockpulse/dockmgr/internal/driver"
 	"github.com/gin-gonic/gin"
 )
 
@@ -39,6 +41,15 @@ func (s *Server) handleDiscoverStacks(c *gin.Context) {
 	}
 	defer d.Close()
 
+	// If host.BaseDir is set to a container path (e.g. /root/docker), translate to host path
+	if socketDriver, ok := d.(*driver.SocketDriver); ok {
+		hostBase := socketDriver.ToHostPath(ctx, host.BaseDir)
+		if hostBase != "" && hostBase != host.BaseDir {
+			host.BaseDir = hostBase
+			_ = s.db.UpdateHost(host)
+		}
+	}
+
 	discovered, err := d.DiscoverStacks(ctx, host.BaseDir)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -46,7 +57,9 @@ func (s *Server) handleDiscoverStacks(c *gin.Context) {
 	}
 
 	// Upsert discovered into database
+	discoveredNames := make(map[string]bool)
 	for _, disc := range discovered {
+		discoveredNames[disc.Name] = true
 		stack := &database.Stack{
 			HostID: hostID,
 			Name:   disc.Name,
@@ -56,8 +69,25 @@ func (s *Server) handleDiscoverStacks(c *gin.Context) {
 		_ = s.db.UpsertStack(stack)
 	}
 
+	// Purge any stale duplicate stacks for this host (e.g. leftover /root/docker stacks)
+	existing, _ := s.db.ListStacks(hostID)
+	for _, st := range existing {
+		if strings.HasPrefix(st.Path, "/root/docker/") && discoveredNames[st.Name] {
+			_ = s.db.DeleteStack(st.ID)
+		}
+	}
+
 	stacks, _ := s.db.ListStacks(hostID)
 	c.JSON(http.StatusOK, stacks)
+}
+
+func (s *Server) handleDeleteStack(c *gin.Context) {
+	stackID := c.Param("sid")
+	if err := s.db.DeleteStack(stackID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
 func (s *Server) handleGetStackFiles(c *gin.Context) {

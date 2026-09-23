@@ -111,7 +111,27 @@ func (db *DB) migrate() error {
 	);
 	`
 	_, err := db.conn.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Deduplicate any duplicate stacks on the same host (e.g. from previous container vs host path scans)
+	// Prefer host path (not starting with /root/docker/ when alternative exists) or newer updated_at
+	_, _ = db.conn.Exec(`
+		DELETE FROM stacks
+		WHERE id IN (
+			SELECT s1.id FROM stacks s1
+			JOIN stacks s2 ON s1.host_id = s2.host_id AND s1.name = s2.name AND s1.id != s2.id
+			WHERE (s1.path LIKE '/root/docker/%' AND s2.path NOT LIKE '/root/docker/%')
+			   OR (
+			        NOT (s1.path LIKE '/root/docker/%' AND s2.path NOT LIKE '/root/docker/%')
+			        AND NOT (s2.path LIKE '/root/docker/%' AND s1.path NOT LIKE '/root/docker/%')
+			        AND (s1.updated_at < s2.updated_at OR (s1.updated_at = s2.updated_at AND s1.id < s2.id))
+			   )
+		)
+	`)
+
+	return nil
 }
 
 // User operations
@@ -272,15 +292,57 @@ func (db *DB) UpsertStack(s *Stack) error {
 	now := time.Now().UTC()
 	s.CreatedAt = now
 	s.UpdatedAt = now
-	_, err := db.conn.Exec(`
+
+	// 1. Check if a stack already exists with the exact same (host_id, path)
+	var exactMatchID string
+	err := db.conn.QueryRow(
+		"SELECT id FROM stacks WHERE host_id = ? AND path = ?",
+		s.HostID, s.Path,
+	).Scan(&exactMatchID)
+
+	if err == nil {
+		s.ID = exactMatchID
+		_, updateErr := db.conn.Exec(`
+			UPDATE stacks
+			SET name = ?, status = ?, updated_at = ?
+			WHERE id = ?
+		`, s.Name, s.Status, s.UpdatedAt, exactMatchID)
+		if updateErr != nil {
+			return updateErr
+		}
+		// Delete any stale duplicate stacks with the same name on this host
+		_, _ = db.conn.Exec("DELETE FROM stacks WHERE host_id = ? AND name = ? AND id != ?", s.HostID, s.Name, exactMatchID)
+		return nil
+	}
+
+	// 2. Check if a stack exists with the same (host_id, name) but different path (e.g. path migration)
+	var nameMatchID string
+	err = db.conn.QueryRow(
+		"SELECT id FROM stacks WHERE host_id = ? AND name = ?",
+		s.HostID, s.Name,
+	).Scan(&nameMatchID)
+
+	if err == nil {
+		s.ID = nameMatchID
+		_, updateErr := db.conn.Exec(`
+			UPDATE stacks
+			SET path = ?, status = ?, updated_at = ?
+			WHERE id = ?
+		`, s.Path, s.Status, s.UpdatedAt, nameMatchID)
+		if updateErr != nil {
+			return updateErr
+		}
+		// Delete any lingering duplicates
+		_, _ = db.conn.Exec("DELETE FROM stacks WHERE host_id = ? AND name = ? AND id != ?", s.HostID, s.Name, nameMatchID)
+		return nil
+	}
+
+	// 3. New stack insert
+	_, insertErr := db.conn.Exec(`
 		INSERT INTO stacks (id, host_id, name, path, status, auto_update, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(host_id, path) DO UPDATE SET
-			name = excluded.name,
-			status = excluded.status,
-			updated_at = excluded.updated_at
 	`, s.ID, s.HostID, s.Name, s.Path, s.Status, s.AutoUpdate, s.CreatedAt, s.UpdatedAt)
-	return err
+	return insertErr
 }
 
 func (db *DB) DeleteStack(id string) error {

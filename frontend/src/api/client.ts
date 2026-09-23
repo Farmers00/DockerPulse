@@ -79,6 +79,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+  deleteStack: (hostId: string, stackId: string) =>
+    request<{ success: boolean }>(`/hosts/${hostId}/stacks/${stackId}`, { method: 'DELETE' }),
   listStackRevisions: (hostId: string, stackId: string) =>
     request<StackRevision[]>(`/hosts/${hostId}/stacks/${stackId}/revisions`),
 
