@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, RefreshCw, CheckCircle, AlertCircle, AlertTriangle, FileCode } from 'lucide-react';
+import { X, RefreshCw, CheckCircle, AlertCircle, AlertTriangle, FileCode, Check, Ban } from 'lucide-react';
 import { api } from '../api/client';
 
 interface UpdateModalProps {
@@ -49,11 +49,18 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
         setOutput(outputRef.current);
       },
       (err) => {
-        if (err) {
-          setStatus('error');
-          setErrorMsg(err.message);
+        const fullOutput = outputRef.current;
+        const isError = Boolean(
+          err ||
+          fullOutput.includes('Command finished with error:') ||
+          fullOutput.includes('exit status ') ||
+          fullOutput.includes('name Does not match pattern')
+        );
 
-          const fullOutput = outputRef.current;
+        if (isError) {
+          setStatus('error');
+          setErrorMsg(err ? err.message : 'Command finished with error');
+
           if (
             fullOutput.includes("name Does not match pattern '^[a-z0-9][a-z0-9_-]*$'") ||
             fullOutput.includes('violates Docker Compose v2 naming rules')
@@ -99,7 +106,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [output]);
 
-  const handleApplyFixAndRetry = async () => {
+  const handleApproveFix = async () => {
     if (!detectedIssue) return;
     try {
       setApplyingFix(true);
@@ -111,9 +118,9 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
       await api.saveStackFiles(hostId, stackId, {
         compose: fixedCompose,
         env: files.env,
-        note: `Updated project name from '${detectedIssue.oldName}' to '${detectedIssue.proposedName}' (User Confirmed)`,
+        note: `Updated project name from '${detectedIssue.oldName}' to '${detectedIssue.proposedName}' (User Approved)`,
       });
-      outputRef.current += `\n[DockerPulse] Applied proposed fix: updated project name to '${detectedIssue.proposedName}'. Retrying ${action}...\n\n`;
+      outputRef.current += `\n[DockerPulse] User approved proposed change: updated project name to '${detectedIssue.proposedName}'. Processing ${action}...\n\n`;
       setOutput(outputRef.current);
       setDetectedIssue(null);
       startAction();
@@ -122,6 +129,10 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
     } finally {
       setApplyingFix(false);
     }
+  };
+
+  const handleDenyFix = () => {
+    setDetectedIssue(null);
   };
 
   const getActionLabel = () => {
@@ -170,22 +181,22 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
           </button>
         </div>
 
-        {/* Issue Warning & Proposal Banner (Shown when issue is caught, asking for user confirmation) */}
+        {/* Issue Warning & Proposal Banner with Approve / Deny Options */}
         {detectedIssue && (
-          <div className="mx-4 my-3 p-4 rounded-xl border border-amber-500/40 bg-amber-950/20 text-slate-200 shadow-lg shrink-0">
+          <div className="mx-4 my-3 p-4 rounded-xl border border-amber-500/40 bg-amber-950/30 text-slate-200 shadow-xl shrink-0">
             <div className="flex items-start gap-3">
               <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
               <div className="flex-1">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-semibold text-amber-300 uppercase tracking-wider">
-                    Compose Specification Issue Detected
+                    Suggested Fix Available
                   </h3>
-                  <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono">
-                    Requires User Approval
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono font-medium border border-amber-500/30">
+                    User Approval Required
                   </span>
                 </div>
                 <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
-                  The top-level project name <code className="bg-slate-900 px-1.5 py-0.5 rounded text-amber-300 font-mono font-semibold">name: {detectedIssue.oldName}</code> in <code className="bg-slate-900 px-1.5 py-0.5 rounded text-slate-300 font-mono">compose.yml</code> contains spaces or characters that Docker Compose v2 rejects with pattern <code className="bg-slate-900 px-1 py-0.5 rounded text-slate-400 font-mono">^[a-z0-9][a-z0-9_-]*$</code>.
+                  The top-level project name <code className="bg-slate-900 px-1.5 py-0.5 rounded text-amber-300 font-mono font-semibold">name: {detectedIssue.oldName}</code> in <code className="bg-slate-900 px-1.5 py-0.5 rounded text-slate-300 font-mono">compose.yml</code> contains spaces or characters rejected by Docker Compose v2 with pattern <code className="bg-slate-900 px-1 py-0.5 rounded text-slate-400 font-mono">^[a-z0-9][a-z0-9_-]*$</code>.
                 </p>
 
                 <div className="mt-3 p-3 rounded-lg bg-slate-900/90 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -201,15 +212,23 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                         className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-lg transition-colors border border-slate-700"
                       >
                         <FileCode className="w-3.5 h-3.5" />
-                        Edit File Manually
+                        Edit Manually
                       </button>
                     )}
                     <button
-                      onClick={handleApplyFixAndRetry}
-                      disabled={applyingFix}
-                      className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs rounded-lg transition-colors shadow-sm disabled:opacity-50"
+                      onClick={handleDenyFix}
+                      className="flex items-center gap-1 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium rounded-lg transition-colors border border-slate-700"
                     >
-                      {applyingFix ? 'Applying Fix...' : 'Apply Fix & Retry'}
+                      <Ban className="w-3.5 h-3.5 text-slate-400" />
+                      Deny
+                    </button>
+                    <button
+                      onClick={handleApproveFix}
+                      disabled={applyingFix}
+                      className="flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs rounded-lg transition-colors shadow-sm disabled:opacity-50"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      {applyingFix ? 'Applying & Running...' : 'Approve & Apply'}
                     </button>
                   </div>
                 </div>
