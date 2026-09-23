@@ -85,7 +85,9 @@ function formatImage(img: string): string {
 }
 
 function isContainerUpdateAvailable(c: ContainerInfo, updateMap: Record<string, boolean>): boolean {
-  if (!c || !updateMap) return false;
+  if (!c) return false;
+  if (c.has_update) return true;
+  if (!updateMap) return false;
   if (c.image && updateMap[c.image]) return true;
   if (c.image_id && updateMap[c.image_id]) return true;
   if (c.image) {
@@ -184,6 +186,7 @@ export const App: React.FC = () => {
   // Load host data when selectedHostId changes
   useEffect(() => {
     if (selectedHostId) {
+      setUpdates({});
       refreshHostData();
     }
   }, [selectedHostId]);
@@ -290,12 +293,13 @@ export const App: React.FC = () => {
         const list = await api.listContainers(h.id);
         if (Array.isArray(list)) {
           const rCount = list.filter((c) => c && c.state === 'running').length;
+          const uCount = list.filter((c) => c && c.has_update).length;
           setFleetStats((prev) => ({
             ...prev,
             [h.id]: {
               running: rCount,
               total: list.length,
-              updates: prev[h.id]?.updates || 0,
+              updates: uCount > 0 ? uCount : prev[h.id]?.updates || 0,
             },
           }));
         }

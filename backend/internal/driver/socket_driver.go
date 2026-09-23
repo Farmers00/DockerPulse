@@ -91,19 +91,36 @@ func (d *SocketDriver) ListContainers(ctx context.Context) ([]ContainerInfo, err
 		RepoDigests []string `json:"RepoDigests"`
 	}
 	var rawImages []rawImageSummary
-	_ = d.client.Get(ctx, "/images/json", &rawImages)
+	_ = d.client.Get(ctx, "/images/json?all=1", &rawImages)
 
 	imageDigests := make(map[string][]string)
 	imageTags := make(map[string][]string)
+	tagToImageID := make(map[string]string)
 	for _, img := range rawImages {
 		if len(img.RepoDigests) > 0 {
 			imageDigests[img.ID] = img.RepoDigests
+			imageDigests[cleanDigest(img.ID)] = img.RepoDigests
 			for _, tag := range img.RepoTags {
 				imageDigests[tag] = img.RepoDigests
 			}
 		}
 		if len(img.RepoTags) > 0 {
 			imageTags[img.ID] = img.RepoTags
+			imageTags[cleanDigest(img.ID)] = img.RepoTags
+			for _, tag := range img.RepoTags {
+				if tag != "" && tag != "<none>:<none>" {
+					tagToImageID[tag] = img.ID
+					if strings.HasSuffix(tag, ":latest") {
+						tagToImageID[strings.TrimSuffix(tag, ":latest")] = img.ID
+					}
+					trimmed := strings.TrimPrefix(tag, "docker.io/")
+					trimmed = strings.TrimPrefix(trimmed, "library/")
+					tagToImageID[trimmed] = img.ID
+					if strings.HasSuffix(trimmed, ":latest") {
+						tagToImageID[strings.TrimSuffix(trimmed, ":latest")] = img.ID
+					}
+				}
+			}
 		}
 	}
 
@@ -120,15 +137,48 @@ func (d *SocketDriver) ListContainers(ctx context.Context) ([]ContainerInfo, err
 						break
 					}
 				}
+			} else if tags := imageTags[cleanDigest(c.ImageID)]; len(tags) > 0 {
+				for _, t := range tags {
+					if t != "" && t != "<none>:<none>" && !strings.HasPrefix(t, "sha256:") {
+						displayImage = t
+						break
+					}
+				}
 			}
+
+			// If still sha256 or empty, inspect container to read Config.Image
+			if strings.HasPrefix(displayImage, "sha256:") || displayImage == "" {
+				var detail struct {
+					Config struct {
+						Image string `json:"Image"`
+					} `json:"Config"`
+				}
+				if err := d.client.Get(ctx, "/containers/"+c.ID+"/json", &detail); err == nil {
+					if detail.Config.Image != "" && !strings.HasPrefix(detail.Config.Image, "sha256:") {
+						displayImage = detail.Config.Image
+					}
+				}
+			}
+		}
+
+		// Check if local image repository tag has already been updated to a newer ID than the container's running image
+		hasLocalUpdate := false
+		lookupTag := strings.TrimPrefix(displayImage, "docker.io/")
+		lookupTag = strings.TrimPrefix(lookupTag, "library/")
+		localTagID := tagToImageID[lookupTag]
+		if localTagID == "" && !strings.Contains(lookupTag, ":") {
+			localTagID = tagToImageID[lookupTag+":latest"]
+		}
+		if localTagID != "" && cleanDigest(localTagID) != cleanDigest(c.ImageID) {
+			hasLocalUpdate = true
 		}
 
 		digests := imageDigests[c.ImageID]
 		if len(digests) == 0 {
-			digests = imageDigests[c.Image]
+			digests = imageDigests[cleanDigest(c.ImageID)]
 		}
-		if len(digests) == 0 && displayImage != "" {
-			digests = imageDigests[displayImage]
+		if len(digests) == 0 {
+			digests = imageDigests[c.Image]
 		}
 
 		info := ContainerInfo{
@@ -141,6 +191,7 @@ func (d *SocketDriver) ListContainers(ctx context.Context) ([]ContainerInfo, err
 			Created:     c.Created,
 			State:       c.State,
 			Status:      c.Status,
+			HasUpdate:   hasLocalUpdate,
 			Stack:       c.Labels["com.docker.compose.project"],
 			Service:     c.Labels["com.docker.compose.service"],
 			WorkingDir:  c.Labels["com.docker.compose.project.working_dir"],
@@ -874,4 +925,13 @@ func expandHomeDir(path string) string {
 		}
 	}
 	return path
+}
+
+func cleanDigest(d string) string {
+	d = strings.TrimSpace(d)
+	d = strings.Trim(d, "\"")
+	if idx := strings.LastIndex(d, "sha256:"); idx != -1 {
+		return d[idx+7:]
+	}
+	return strings.TrimPrefix(d, "sha256:")
 }

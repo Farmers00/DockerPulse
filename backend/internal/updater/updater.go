@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dockpulse/dockmgr/internal/database"
@@ -136,6 +137,11 @@ func cleanDigest(d string) string {
 }
 
 func parseImageRef(image string) (registry, repo, tag string) {
+	// Strip digest pinning if present: e.g. "repo/image:tag@sha256:..." -> "repo/image:tag"
+	if atIdx := strings.Index(image, "@"); atIdx != -1 {
+		image = image[:atIdx]
+	}
+
 	tag = "latest"
 	if idx := strings.LastIndex(image, ":"); idx != -1 && !strings.Contains(image[idx:], "/") {
 		tag = image[idx+1:]
@@ -171,6 +177,7 @@ func parseImageRef(image string) (registry, repo, tag string) {
 		}
 	}
 
+	repo = strings.ToLower(repo)
 	return registry, repo, tag
 }
 
@@ -237,6 +244,18 @@ func (u *UpdateChecker) fetchRemoteManifest(ctx context.Context, registry, repo,
 
 		if realm != "" {
 			tokenURL := fmt.Sprintf("%s?service=%s&scope=%s", realm, url.QueryEscape(service), url.QueryEscape(scope))
+			if uRealm, parseErr := url.Parse(realm); parseErr == nil {
+				q := uRealm.Query()
+				if service != "" {
+					q.Set("service", service)
+				}
+				if scope != "" {
+					q.Set("scope", scope)
+				}
+				uRealm.RawQuery = q.Encode()
+				tokenURL = uRealm.String()
+			}
+
 			tokenReq, _ := http.NewRequestWithContext(ctx, "GET", tokenURL, nil)
 			tokenResp, err := u.client.Do(tokenReq)
 			if err == nil && tokenResp.StatusCode == http.StatusOK {
@@ -320,25 +339,100 @@ func (u *UpdateChecker) CheckHostContainers(ctx context.Context, h driver.HostDr
 		return nil, err
 	}
 
-	cache := make(map[string]*CheckResult)
-	var results []CheckResult
+	type checkTask struct {
+		container driver.ContainerInfo
+		cacheKey  string
+	}
+
+	var tasks []checkTask
+	seen := make(map[string]bool)
+
 	for _, c := range containers {
 		if c.Image == "" {
 			continue
 		}
 		cacheKey := c.Image + "::" + c.ImageID
-		if cached, ok := cache[cacheKey]; ok {
-			results = append(results, *cached)
+		if !seen[cacheKey] {
+			seen[cacheKey] = true
+			tasks = append(tasks, checkTask{container: c, cacheKey: cacheKey})
+		}
+	}
+
+	var resultsMu sync.Mutex
+	resMap := make(map[string]*CheckResult)
+
+	// Concurrency limiter (up to 6 concurrent registry queries)
+	sem := make(chan struct{}, 6)
+	var wg sync.WaitGroup
+
+	for _, task := range tasks {
+		c := task.container
+		key := task.cacheKey
+
+		// If already known to have an update from local tag mismatch, record immediately
+		if c.HasUpdate {
+			resultsMu.Lock()
+			resMap[key] = &CheckResult{
+				Image:         c.Image,
+				CurrentDigest: c.ImageID,
+				HasUpdate:     true,
+			}
+			resultsMu.Unlock()
 			continue
 		}
 
-		res, err := u.CheckImage(ctx, c.Image, c.ImageID, c.RepoDigests)
-		if err != nil {
-			log.Printf("[Updater] CheckImage error for host %s, image %s: %v", hostID, c.Image, err)
+		wg.Add(1)
+		go func(c driver.ContainerInfo, key string) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+
+			res, err := u.CheckImage(ctx, c.Image, c.ImageID, c.RepoDigests)
+			resultsMu.Lock()
+			defer resultsMu.Unlock()
+
+			if err != nil {
+				log.Printf("[Updater] CheckImage error for host %s, image %s: %v", hostID, c.Image, err)
+				if c.HasUpdate {
+					resMap[key] = &CheckResult{
+						Image:         c.Image,
+						CurrentDigest: c.ImageID,
+						HasUpdate:     true,
+					}
+				}
+				return
+			}
+
+			if c.HasUpdate {
+				res.HasUpdate = true
+			}
+			resMap[key] = res
+		}(c, key)
+	}
+
+	wg.Wait()
+
+	var results []CheckResult
+	for _, c := range containers {
+		if c.Image == "" {
 			continue
 		}
-		cache[cacheKey] = res
-		results = append(results, *res)
+		key := c.Image + "::" + c.ImageID
+		if res, ok := resMap[key]; ok && res != nil {
+			results = append(results, *res)
+		} else if c.HasUpdate {
+			results = append(results, CheckResult{
+				Image:         c.Image,
+				CurrentDigest: c.ImageID,
+				HasUpdate:     true,
+			})
+		}
 	}
+
 	return results, nil
 }
+
