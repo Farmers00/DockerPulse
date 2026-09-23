@@ -959,7 +959,10 @@ func sanitizeComposeName(raw string) string {
 			b.WriteRune(r)
 		} else if r == '-' || r == '_' || r == ' ' || r == '.' {
 			if b.Len() > 0 {
-				b.WriteByte('-')
+				last := b.String()[b.Len()-1]
+				if last != '-' && last != '_' {
+					b.WriteByte('-')
+				}
 			}
 		}
 	}

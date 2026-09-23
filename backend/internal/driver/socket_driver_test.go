@@ -96,6 +96,14 @@ func TestSanitizeCompose(t *testing.T) {
 			containsStr: "name: ollama\n",
 		},
 		{
+			name:        "User case - name with space without quotes",
+			input:       "name: ollama stack\nservices:\n  open-webui:\n    image: ghcr.io/open-webui/open-webui:cuda\n",
+			wantMod:     true,
+			wantOld:     "ollama stack",
+			wantNew:     "ollama-stack",
+			containsStr: "name: ollama-stack\n",
+		},
+		{
 			name:        "Name with space and quotes",
 			input:       "name: \"Ollama LLM\" # my server\nservices:\n  web:\n    image: nginx\n",
 			wantMod:     true,
