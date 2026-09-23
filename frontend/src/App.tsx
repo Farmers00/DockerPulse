@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import {
   Server,
   Layers,
@@ -123,7 +123,7 @@ export const App: React.FC = () => {
   const [logContainer, setLogContainer] = useState<ContainerInfo | null>(null);
   const [terminalContainer, setTerminalContainer] = useState<ContainerInfo | null>(null);
   const [editStack, setEditStack] = useState<Stack | null>(null);
-  const [updateAction, setUpdateAction] = useState<{ stack: Stack; action: string } | null>(null);
+  const [updateAction, setUpdateAction] = useState<{ stack?: Stack; stacks?: Stack[]; action: string } | null>(null);
   const [showNetworks, setShowNetworks] = useState(false);
   const [showStorage, setShowStorage] = useState(false);
   const [showAddHost, setShowAddHost] = useState(false);
@@ -355,6 +355,27 @@ export const App: React.FC = () => {
   const containerList = Array.isArray(containers) ? containers : [];
   const stackList = Array.isArray(stacks) ? stacks : [];
   const currentHost = hostList.find((h) => h.id === selectedHostId);
+
+  const stacksToUpdate = useMemo(() => {
+    return stackList.filter((s) => {
+      const sc = containerList.filter((c) => matchesStack(c, s));
+      return sc.some((c) => isContainerUpdateAvailable(c, updates));
+    });
+  }, [stackList, containerList, updates]);
+
+  const handleUpdateAll = () => {
+    if (stacksToUpdate.length > 0) {
+      setUpdateAction({ stacks: stacksToUpdate, action: 'pull_up' });
+    } else {
+      if (stackList.length === 0) {
+        alert('No compose stacks found on this host.');
+        return;
+      }
+      if (window.confirm(`No pending updates detected. Run Pull & Up on all ${stackList.length} stack(s) anyway?`)) {
+        setUpdateAction({ stacks: stackList, action: 'pull_up' });
+      }
+    }
+  };
 
   if (authNeeded) {
     return (
@@ -629,6 +650,23 @@ export const App: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={handleUpdateAll}
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold shadow-md transition-all ${
+                stacksToUpdate.length > 0
+                  ? 'bg-amber-600 hover:bg-amber-500 text-white shadow-amber-600/20 ring-1 ring-amber-400/40'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'
+              }`}
+              title={
+                stacksToUpdate.length > 0
+                  ? `Update all ${stacksToUpdate.length} stacks with pending updates`
+                  : 'Pull & Up all stacks'
+              }
+            >
+              <ArrowUpCircle className={`w-3.5 h-3.5 ${stacksToUpdate.length > 0 ? 'text-amber-200' : 'text-slate-400'}`} />
+              <span>Update All{stacksToUpdate.length > 0 ? ` (${stacksToUpdate.length})` : ''}</span>
+            </button>
+
             {viewMode === 'stacks' && (
               <button
                 onClick={handleDiscoverStacks}
@@ -685,9 +723,28 @@ export const App: React.FC = () => {
                             </span>
                           )}
                           {hasUpdate && (
-                            <span className="flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-400 border border-amber-500/20 shrink-0">
-                              <ArrowUpCircle className="w-3 h-3" /> Update Available
-                            </span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const st = stackList.find(
+                                  (s) =>
+                                    s.name === c.stack ||
+                                    s.path.endsWith('/' + c.stack) ||
+                                    (c.working_dir && s.path === c.working_dir) ||
+                                    matchesStack(c, s)
+                                );
+                                if (st) {
+                                  setUpdateAction({ stack: st, action: 'pull_up' });
+                                } else {
+                                  alert(`No matching compose stack found for '${c.stack || name}'. Ensure the stack directory is scanned in DockerPulse.`);
+                                }
+                              }}
+                              className="flex items-center gap-1 rounded bg-amber-500/15 hover:bg-amber-500/25 active:bg-amber-500/35 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 hover:text-amber-200 border border-amber-500/30 hover:border-amber-400/50 shadow-sm transition-all cursor-pointer"
+                              title="Update Available: Click to run Pull & Up for this stack"
+                            >
+                              <ArrowUpCircle className="w-3 h-3 text-amber-400" /> Update Available
+                            </button>
                           )}
                         </div>
                         <div className="flex items-center gap-2 text-xs text-slate-400 font-mono mt-0.5 min-w-0">
@@ -817,10 +874,18 @@ export const App: React.FC = () => {
                         </div>
                         <div className="flex items-center gap-1.5">
                           {updateCount > 0 && (
-                            <span className="flex items-center gap-1 rounded bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 text-[10px] font-mono font-semibold text-amber-400">
-                              <ArrowUpCircle className="w-3 h-3" />
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setUpdateAction({ stack: s, action: 'pull_up' });
+                              }}
+                              className="flex items-center gap-1 rounded bg-amber-500/15 hover:bg-amber-500/25 active:bg-amber-500/35 border border-amber-500/30 hover:border-amber-400/50 px-2 py-0.5 text-[10px] font-mono font-semibold text-amber-300 hover:text-amber-200 shadow-sm transition-all cursor-pointer"
+                              title={`Click to update this stack (${updateCount} container update${updateCount === 1 ? '' : 's'} available)`}
+                            >
+                              <ArrowUpCircle className="w-3 h-3 text-amber-400" />
                               {updateCount} {updateCount === 1 ? 'Update' : 'Updates'}
-                            </span>
+                            </button>
                           )}
                           <span
                             className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold ${
@@ -961,14 +1026,15 @@ export const App: React.FC = () => {
       {updateAction && (
         <UpdateModal
           hostId={selectedHostId}
-          stackId={updateAction.stack.id}
-          stackName={updateAction.stack.name}
+          stackId={updateAction.stack?.id || updateAction.stacks?.[0]?.id || ''}
+          stackName={updateAction.stack?.name || updateAction.stacks?.[0]?.name || ''}
+          stacks={updateAction.stacks || (updateAction.stack ? [updateAction.stack] : [])}
           action={updateAction.action}
           onClose={() => setUpdateAction(null)}
           onOpenEditor={() => {
-            const st = updateAction.stack;
+            const st = updateAction.stack || updateAction.stacks?.[0];
             setUpdateAction(null);
-            setEditStack(st);
+            if (st) setEditStack(st);
           }}
           onFinished={() => {
             refreshHostData();

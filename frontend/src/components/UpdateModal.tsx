@@ -12,13 +12,16 @@ import {
   Terminal,
   Eye,
   EyeOff,
+  SkipForward,
 } from 'lucide-react';
 import { api } from '../api/client';
+import { Stack } from '../types';
 
 interface UpdateModalProps {
   hostId: string;
-  stackId: string;
-  stackName: string;
+  stackId?: string;
+  stackName?: string;
+  stacks?: Stack[];
   action: string; // 'pull_up', 'pull', 'up', 'down', 'restart'
   onClose: () => void;
   onFinished: () => void;
@@ -63,11 +66,23 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
   hostId,
   stackId,
   stackName,
+  stacks,
   action,
   onClose,
   onFinished,
   onOpenEditor,
 }) => {
+  const effectiveStacks = useMemo<Stack[]>(() => {
+    if (stacks && stacks.length > 0) return stacks;
+    if (stackId && stackName) return [{ id: stackId, name: stackName } as Stack];
+    return [];
+  }, [stacks, stackId, stackName]);
+
+  const [currentStackIndex, setCurrentStackIndex] = useState(0);
+  const currentStack = effectiveStacks[currentStackIndex];
+  const currentStackIndexRef = useRef(currentStackIndex);
+  currentStackIndexRef.current = currentStackIndex;
+
   const [output, setOutput] = useState<string>('');
   const [status, setStatus] = useState<'running' | 'success' | 'error'>('running');
   const [errorMsg, setErrorMsg] = useState<string>('');
@@ -163,10 +178,17 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
     }
   };
 
-  const startAction = () => {
-    const initMsg = `[DockerPulse] Initiating action '${action}' on stack '${stackName}'...\n`;
-    outputRef.current = initMsg;
-    setOutput(initMsg);
+  const startActionForStack = (index: number) => {
+    if (index >= effectiveStacks.length) return;
+    const targetStack = effectiveStacks[index];
+    const targetStackId = targetStack.id;
+    const targetStackName = targetStack.name;
+
+    const initMsg = `[DockerPulse] Initiating action '${action}' on stack '${targetStackName}'${
+      effectiveStacks.length > 1 ? ` (${index + 1}/${effectiveStacks.length})` : ''
+    }...\n`;
+    outputRef.current += initMsg;
+    setOutput(outputRef.current);
     setStatus('running');
     setErrorMsg('');
     setDetectedIssue(null);
@@ -176,7 +198,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
 
     api.streamComposeAction(
       hostId,
-      stackId,
+      targetStackId,
       action,
       (chunk) => {
         outputRef.current += chunk;
@@ -194,7 +216,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
 
         if (isError) {
           setStatus('error');
-          setErrorMsg(err ? err.message : 'Command finished with error');
+          setErrorMsg(err ? err.message : `Command finished with error on stack '${targetStackName}'`);
 
           if (
             fullOutput.includes("name Does not match pattern '^[a-z0-9][a-z0-9_-]*$'") ||
@@ -206,7 +228,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
               setDetectedIssue({ oldName: matchOld[1], proposedName: matchProposed[1] });
             } else {
               api
-                .getStackFiles(hostId, stackId)
+                .getStackFiles(hostId, targetStackId)
                 .then((files) => {
                   const m = files.compose.match(/^name\s*:\s*(.+)$/m);
                   if (m) {
@@ -225,15 +247,26 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             }
           }
         } else {
-          setStatus('success');
-          onFinishedRef.current?.();
+          if (index + 1 < effectiveStacks.length) {
+            outputRef.current += `\n[DockerPulse] Stack '${targetStackName}' completed successfully!\nProceeding to next stack...\n\n`;
+            setOutput(outputRef.current);
+            setCurrentStackIndex(index + 1);
+            startActionForStack(index + 1);
+          } else {
+            outputRef.current += `\n[DockerPulse] All ${effectiveStacks.length} stack(s) completed successfully.\n`;
+            setOutput(outputRef.current);
+            setStatus('success');
+            onFinishedRef.current?.();
+          }
         }
       }
     );
   };
 
   useEffect(() => {
-    startAction();
+    if (effectiveStacks.length > 0) {
+      startActionForStack(0);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -255,15 +288,15 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
   }, [output, showRawLog]);
 
   const handleApproveFix = async () => {
-    if (!detectedIssue) return;
+    if (!detectedIssue || !currentStack) return;
     try {
       setApplyingFix(true);
-      const files = await api.getStackFiles(hostId, stackId);
+      const files = await api.getStackFiles(hostId, currentStack.id);
       const fixedCompose = files.compose.replace(
         /(^name\s*:\s*)(.+)$/m,
         `$1${detectedIssue.proposedName}`
       );
-      await api.saveStackFiles(hostId, stackId, {
+      await api.saveStackFiles(hostId, currentStack.id, {
         compose: fixedCompose,
         env: files.env,
         note: `Updated project name from '${detectedIssue.oldName}' to '${detectedIssue.proposedName}' (User Approved)`,
@@ -271,7 +304,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
       outputRef.current += `\n[DockerPulse] User approved proposed change: updated project name to '${detectedIssue.proposedName}'. Processing ${action}...\n\n`;
       setOutput(outputRef.current);
       setDetectedIssue(null);
-      startAction();
+      startActionForStack(currentStackIndexRef.current);
     } catch (err: any) {
       alert(err.message || 'Failed to apply proposed fix');
     } finally {
@@ -286,7 +319,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
   const getActionLabel = () => {
     switch (action) {
       case 'pull_up':
-        return 'Update (Pull & Up -d)';
+        return effectiveStacks.length > 1 ? 'Batch Update (Pull & Up)' : 'Update (Pull & Up)';
       case 'pull':
         return 'Pull Images';
       case 'up':
@@ -316,8 +349,13 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             <div>
               <h2 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
                 <span>{getActionLabel()}</span>
+                {effectiveStacks.length > 1 && (
+                  <span className="rounded bg-sky-500/20 text-sky-300 text-xs px-2 py-0.5 font-mono">
+                    {currentStackIndex + 1} of {effectiveStacks.length}
+                  </span>
+                )}
                 <span className="text-slate-400 font-normal">on</span>
-                <span className="text-sky-300 font-mono">{stackName}</span>
+                <span className="text-sky-300 font-mono">{currentStack?.name || stackName}</span>
               </h2>
             </div>
           </div>
@@ -347,6 +385,33 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Batch Stacks Queue Progress Indicator */}
+        {effectiveStacks.length > 1 && (
+          <div className="flex items-center gap-1.5 overflow-x-auto px-5 py-2.5 bg-slate-950/40 border-b border-slate-800/80 text-xs font-mono shrink-0">
+            {effectiveStacks.map((s, idx) => (
+              <span
+                key={s.id}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] border transition-all ${
+                  idx === currentStackIndex
+                    ? 'bg-sky-500/20 text-sky-300 border-sky-500/40 font-semibold shadow-sm'
+                    : idx < currentStackIndex
+                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                    : 'bg-slate-800/60 text-slate-400 border-slate-700/40'
+                }`}
+              >
+                {idx < currentStackIndex && <Check className="w-3 h-3 text-emerald-400" />}
+                {idx === currentStackIndex && status === 'running' && (
+                  <RefreshCw className="w-3 h-3 text-sky-400 animate-spin" />
+                )}
+                {idx === currentStackIndex && status === 'error' && (
+                  <AlertCircle className="w-3 h-3 text-rose-400" />
+                )}
+                <span>{s.name}</span>
+              </span>
+            ))}
+          </div>
+        )}
 
         {/* Live Progress Bar Card for Downloads */}
         {downloadProgress && status === 'running' && (
@@ -482,18 +547,43 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
               <span className="text-sky-400 animate-pulse font-medium">Executing command in stack directory...</span>
             )}
             {status === 'success' && (
-              <span className="text-emerald-400 font-medium">Operation completed successfully!</span>
+              <span className="text-emerald-400 font-medium">
+                Operation completed successfully!{effectiveStacks.length > 1 ? ` (${effectiveStacks.length} stacks updated)` : ''}
+              </span>
             )}
             {status === 'error' && (
               <span className="text-rose-400 font-medium">Operation failed: {errorMsg}</span>
             )}
           </div>
-          <button
-            onClick={onClose}
-            className="rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 px-4 py-1.5 text-xs font-medium text-slate-200 transition-colors"
-          >
-            Close
-          </button>
+          <div className="flex items-center gap-2">
+            {status === 'error' && currentStackIndex + 1 < effectiveStacks.length && (
+              <button
+                onClick={() => {
+                  setCurrentStackIndex((prev) => prev + 1);
+                  startActionForStack(currentStackIndex + 1);
+                }}
+                className="flex items-center gap-1 rounded-lg bg-amber-600 hover:bg-amber-500 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors"
+                title="Skip current stack and continue to next"
+              >
+                <SkipForward className="w-3.5 h-3.5" />
+                Skip to Next ({effectiveStacks[currentStackIndex + 1].name})
+              </button>
+            )}
+            {status === 'error' && (
+              <button
+                onClick={() => startActionForStack(currentStackIndex)}
+                className="rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors"
+              >
+                Retry
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 px-4 py-1.5 text-xs font-medium text-slate-200 transition-colors"
+            >
+              Close
+            </button>
+          </div>
         </div>
       </div>
     </div>
