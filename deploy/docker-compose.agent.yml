@@ -8,6 +8,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # Host compose directory to manage (~/docker on host)
       - ${HOME}/docker:/root/docker
+    environment:
+      - HOST_BASE_DIR=${HOST_BASE_DIR:-${HOME}/docker}
     command: >
       agent
       --server ws://manager-ip-or-domain:8080/ws/agent

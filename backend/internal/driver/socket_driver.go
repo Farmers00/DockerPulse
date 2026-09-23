@@ -13,8 +13,16 @@ import (
 	"time"
 )
 
+type hostMount struct {
+	Source      string
+	Destination string
+}
+
 type SocketDriver struct {
-	client *DockerClient
+	client     *DockerClient
+	mountsMu   sync.Mutex
+	mounts     []hostMount
+	mountsInit bool
 }
 
 func NewSocketDriver(hostAddress string) (*SocketDriver, error) {
@@ -418,10 +426,199 @@ func (d *SocketDriver) PruneResources(ctx context.Context, pruneAll bool) (*Prun
 	return report, nil
 }
 
+func normalizePath(p string) string {
+	if p == "" {
+		return ""
+	}
+	p = strings.TrimSpace(p)
+	p = strings.ReplaceAll(p, "\\", "/")
+	p = filepath.Clean(p)
+	return strings.ReplaceAll(p, "\\", "/")
+}
+
+func (d *SocketDriver) getMounts(ctx context.Context) []hostMount {
+	d.mountsMu.Lock()
+	defer d.mountsMu.Unlock()
+
+	if d.mountsInit {
+		return d.mounts
+	}
+	d.mountsInit = true
+
+	// 1. Check environment variable override
+	if envHostBase := os.Getenv("HOST_BASE_DIR"); envHostBase != "" {
+		envContainerBase := os.Getenv("CONTAINER_BASE_DIR")
+		if envContainerBase == "" {
+			envContainerBase = "/root/docker"
+		}
+		d.mounts = append(d.mounts, hostMount{
+			Source:      normalizePath(envHostBase),
+			Destination: normalizePath(envContainerBase),
+		})
+	}
+
+	// 2. Query Docker inspect for self-container
+	hostname, _ := os.Hostname()
+	candidates := []string{
+		hostname,
+		os.Getenv("HOSTNAME"),
+		"dockerpulse-agent",
+		"dockerpulse",
+	}
+
+	type inspectResp struct {
+		Mounts []struct {
+			Type        string `json:"Type"`
+			Source      string `json:"Source"`
+			Destination string `json:"Destination"`
+		} `json:"Mounts"`
+	}
+
+	for _, cid := range candidates {
+		if cid == "" {
+			continue
+		}
+		var resp inspectResp
+		if err := d.client.Get(ctx, "/containers/"+cid+"/json", &resp); err == nil && len(resp.Mounts) > 0 {
+			for _, m := range resp.Mounts {
+				if m.Type == "bind" && !strings.Contains(m.Source, "docker.sock") && !strings.Contains(m.Destination, "docker.sock") {
+					normSrc := normalizePath(m.Source)
+					normDst := normalizePath(m.Destination)
+					exists := false
+					for _, existing := range d.mounts {
+						if existing.Destination == normDst {
+							exists = true
+							break
+						}
+					}
+					if !exists {
+						d.mounts = append(d.mounts, hostMount{
+							Source:      normSrc,
+							Destination: normDst,
+						})
+					}
+				}
+			}
+			if len(d.mounts) > 0 {
+				break
+			}
+		}
+	}
+
+	// 3. Fallback: check /containers/json for dockerpulse containers
+	if len(d.mounts) == 0 {
+		var containers []struct {
+			Names  []string `json:"Names"`
+			Image  string   `json:"Image"`
+			Mounts []struct {
+				Type        string `json:"Type"`
+				Source      string `json:"Source"`
+				Destination string `json:"Destination"`
+			} `json:"Mounts"`
+		}
+		if err := d.client.Get(ctx, "/containers/json?all=1", &containers); err == nil {
+			for _, c := range containers {
+				isSelf := strings.Contains(strings.ToLower(c.Image), "dockerpulse")
+				if !isSelf {
+					for _, n := range c.Names {
+						if strings.Contains(strings.ToLower(n), "dockerpulse") {
+							isSelf = true
+							break
+						}
+					}
+				}
+				if isSelf && len(c.Mounts) > 0 {
+					for _, m := range c.Mounts {
+						if m.Type == "bind" && !strings.Contains(m.Source, "docker.sock") && !strings.Contains(m.Destination, "docker.sock") {
+							normSrc := normalizePath(m.Source)
+							normDst := normalizePath(m.Destination)
+							exists := false
+							for _, existing := range d.mounts {
+								if existing.Destination == normDst {
+									exists = true
+									break
+								}
+							}
+							if !exists {
+								d.mounts = append(d.mounts, hostMount{
+									Source:      normSrc,
+									Destination: normDst,
+								})
+							}
+						}
+					}
+					if len(d.mounts) > 0 {
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return d.mounts
+}
+
+func (d *SocketDriver) ToHostPath(ctx context.Context, p string) string {
+	if p == "" {
+		return ""
+	}
+	normP := normalizePath(p)
+	mounts := d.getMounts(ctx)
+
+	// Check if normP already matches a host mount Source
+	for _, m := range mounts {
+		if normP == m.Source || strings.HasPrefix(normP, m.Source+"/") {
+			return normP
+		}
+	}
+
+	// Check if normP matches a container mount Destination
+	for _, m := range mounts {
+		if normP == m.Destination {
+			return m.Source
+		}
+		if strings.HasPrefix(normP, m.Destination+"/") {
+			rel := strings.TrimPrefix(normP, m.Destination+"/")
+			return m.Source + "/" + rel
+		}
+	}
+
+	return normP
+}
+
+func (d *SocketDriver) ToContainerPath(ctx context.Context, p string) string {
+	if p == "" {
+		return ""
+	}
+	expanded := expandHomeDir(p)
+	normP := normalizePath(expanded)
+	mounts := d.getMounts(ctx)
+
+	// If normP already matches a container mount Destination, return it
+	for _, m := range mounts {
+		if normP == m.Destination || strings.HasPrefix(normP, m.Destination+"/") {
+			return normP
+		}
+	}
+
+	// If normP matches a host mount Source, convert to container Destination
+	for _, m := range mounts {
+		if normP == m.Source {
+			return m.Destination
+		}
+		if strings.HasPrefix(normP, m.Source+"/") {
+			rel := strings.TrimPrefix(normP, m.Source+"/")
+			return m.Destination + "/" + rel
+		}
+	}
+
+	return normP
+}
+
 // Stacks filesystem discovery and compose execution
 func (d *SocketDriver) DiscoverStacks(ctx context.Context, baseDir string) ([]DiscoveredStack, error) {
-	expandedPath := expandHomeDir(baseDir)
-	entries, err := os.ReadDir(expandedPath)
+	containerBase := d.ToContainerPath(ctx, baseDir)
+	entries, err := os.ReadDir(containerBase)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return []DiscoveredStack{}, nil
@@ -435,18 +632,20 @@ func (d *SocketDriver) DiscoverStacks(ctx context.Context, baseDir string) ([]Di
 			continue
 		}
 
-		dirPath := filepath.Join(expandedPath, entry.Name())
-		composeFile := findComposeFile(dirPath)
+		containerDirPath := filepath.Join(containerBase, entry.Name())
+		composeFile := findComposeFile(containerDirPath)
 		if composeFile != "" {
 			info, _ := entry.Info()
 			hasEnv := false
-			if _, err := os.Stat(filepath.Join(dirPath, ".env")); err == nil {
+			if _, err := os.Stat(filepath.Join(containerDirPath, ".env")); err == nil {
 				hasEnv = true
 			}
 
+			hostDirPath := d.ToHostPath(ctx, containerDirPath)
+
 			stacks = append(stacks, DiscoveredStack{
 				Name:        entry.Name(),
-				Path:        dirPath,
+				Path:        hostDirPath,
 				ComposeFile: filepath.Base(composeFile),
 				HasEnvFile:  hasEnv,
 				UpdatedAt:   info.ModTime(),
@@ -457,7 +656,8 @@ func (d *SocketDriver) DiscoverStacks(ctx context.Context, baseDir string) ([]Di
 }
 
 func (d *SocketDriver) ReadStackFiles(ctx context.Context, stackPath string) (string, string, error) {
-	composeFile := findComposeFile(stackPath)
+	containerPath := d.ToContainerPath(ctx, stackPath)
+	composeFile := findComposeFile(containerPath)
 	if composeFile == "" {
 		return "", "", fmt.Errorf("no compose file found in %s", stackPath)
 	}
@@ -467,17 +667,18 @@ func (d *SocketDriver) ReadStackFiles(ctx context.Context, stackPath string) (st
 		return "", "", fmt.Errorf("failed to read compose file: %w", err)
 	}
 
-	envBytes, _ := os.ReadFile(filepath.Join(stackPath, ".env"))
+	envBytes, _ := os.ReadFile(filepath.Join(containerPath, ".env"))
 	return string(composeBytes), string(envBytes), nil
 }
 
 func (d *SocketDriver) WriteStackFiles(ctx context.Context, stackPath string, composeContent string, envContent string) error {
-	composeFile := findComposeFile(stackPath)
+	containerPath := d.ToContainerPath(ctx, stackPath)
+	composeFile := findComposeFile(containerPath)
 	if composeFile == "" {
-		composeFile = filepath.Join(stackPath, "docker-compose.yml")
+		composeFile = filepath.Join(containerPath, "docker-compose.yml")
 	}
 
-	if err := os.MkdirAll(stackPath, 0755); err != nil {
+	if err := os.MkdirAll(containerPath, 0755); err != nil {
 		return err
 	}
 
@@ -485,8 +686,8 @@ func (d *SocketDriver) WriteStackFiles(ctx context.Context, stackPath string, co
 		return fmt.Errorf("failed to write compose file: %w", err)
 	}
 
-	if envContent != "" || fileExists(filepath.Join(stackPath, ".env")) {
-		if err := os.WriteFile(filepath.Join(stackPath, ".env"), []byte(envContent), 0644); err != nil {
+	if envContent != "" || fileExists(filepath.Join(containerPath, ".env")) {
+		if err := os.WriteFile(filepath.Join(containerPath, ".env"), []byte(envContent), 0644); err != nil {
 			return fmt.Errorf("failed to write .env file: %w", err)
 		}
 	}
@@ -494,23 +695,32 @@ func (d *SocketDriver) WriteStackFiles(ctx context.Context, stackPath string, co
 	return nil
 }
 
-func isSelfUpdate(stackPath string) bool {
-	composeFile := findComposeFile(stackPath)
+func isSelfUpdate(containerPath string) bool {
+	composeFile := findComposeFile(containerPath)
 	if composeFile != "" {
 		content, err := os.ReadFile(composeFile)
 		if err == nil && strings.Contains(strings.ToLower(string(content)), "dockerpulse") {
 			return true
 		}
 	}
-	return strings.Contains(strings.ToLower(stackPath), "dockerpulse")
+	return strings.Contains(strings.ToLower(containerPath), "dockerpulse")
 }
 
 func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, action string, writer io.Writer) error {
-	var args []string
+	containerPath := d.ToContainerPath(ctx, stackPath)
+	hostPath := d.ToHostPath(ctx, stackPath)
+	composeFile := findComposeFile(containerPath)
+	if composeFile == "" {
+		return fmt.Errorf("no compose file found in %s", stackPath)
+	}
+
+	projectName := filepath.Base(hostPath)
+	envFile := filepath.Join(containerPath, ".env")
+
 	switch action {
 	case "up", "restart":
-		if isSelfUpdate(stackPath) {
-			fmt.Fprintf(writer, "[DockPulse] Detected self-update/restart of DockerPulse at %s\n", stackPath)
+		if isSelfUpdate(containerPath) {
+			fmt.Fprintf(writer, "[DockPulse] Detected self-update/restart of DockerPulse at %s\n", hostPath)
 			fmt.Fprintln(writer, "[DockPulse] Spawning detached helper runner to safely restart container...")
 
 			selfRef, _ := os.Hostname()
@@ -523,12 +733,17 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 				composeSubCmd = "restart"
 			}
 
-			cmdScript := fmt.Sprintf("sleep 2 && docker compose %s", composeSubCmd)
+			cmdScript := fmt.Sprintf("sleep 2 && docker compose -p %s -f %s --project-directory %s %s",
+				projectName,
+				composeFile,
+				hostPath,
+				composeSubCmd,
+			)
 			runnerCmd := exec.Command("docker", "run", "--rm", "-d",
 				"--entrypoint", "sh",
 				"-v", "/var/run/docker.sock:/var/run/docker.sock",
 				"--volumes-from", selfRef,
-				"-w", stackPath,
+				"-w", containerPath,
 				"ghcr.io/farmers00/dockerpulse:latest",
 				"-c", cmdScript,
 			)
@@ -539,7 +754,7 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 					"--entrypoint", "sh",
 					"-v", "/var/run/docker.sock:/var/run/docker.sock",
 					"--volumes-from", "dockerpulse-agent",
-					"-w", stackPath,
+					"-w", containerPath,
 					"ghcr.io/farmers00/dockerpulse:latest",
 					"-c", cmdScript,
 				)
@@ -563,29 +778,60 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 			fmt.Fprintf(writer, "[DockPulse] Detached runner failed (%v: %s), falling back to direct compose\n", err, strings.TrimSpace(string(out)))
 		}
 
-		args = []string{"compose", action}
+		args := []string{"compose", "-p", projectName, "-f", composeFile}
+		if fileExists(envFile) {
+			args = append(args, "--env-file", envFile)
+		}
+		if hostPath != "" {
+			args = append(args, "--project-directory", hostPath)
+		}
+		args = append(args, action)
 		if action == "up" {
 			args = append(args, "-d")
 		}
+
+		return d.runComposeCmd(ctx, containerPath, args, writer)
+
 	case "down":
-		args = []string{"compose", "down"}
+		args := []string{"compose", "-p", projectName, "-f", composeFile}
+		if fileExists(envFile) {
+			args = append(args, "--env-file", envFile)
+		}
+		if hostPath != "" {
+			args = append(args, "--project-directory", hostPath)
+		}
+		args = append(args, "down")
+		return d.runComposeCmd(ctx, containerPath, args, writer)
+
 	case "pull":
-		args = []string{"compose", "pull"}
+		args := []string{"compose", "-p", projectName, "-f", composeFile}
+		if fileExists(envFile) {
+			args = append(args, "--env-file", envFile)
+		}
+		if hostPath != "" {
+			args = append(args, "--project-directory", hostPath)
+		}
+		args = append(args, "pull")
+		return d.runComposeCmd(ctx, containerPath, args, writer)
+
 	case "pull_up":
 		if err := d.ExecuteCompose(ctx, stackPath, "pull", writer); err != nil {
 			return err
 		}
 		return d.ExecuteCompose(ctx, stackPath, "up", writer)
+
 	default:
 		return fmt.Errorf("unsupported compose action: %s", action)
 	}
+}
 
+func (d *SocketDriver) runComposeCmd(ctx context.Context, workingDir string, args []string, writer io.Writer) error {
 	cmd := exec.CommandContext(ctx, "docker", args...)
-	cmd.Dir = stackPath
+	cmd.Dir = workingDir
 	cmd.Stdout = writer
 	cmd.Stderr = writer
 
-	fmt.Fprintf(writer, "[DockPulse] Running: docker %s (in %s)\n", strings.Join(args, " "), stackPath)
+	fmt.Fprintf(writer, "[DockPulse] Running: docker %s\n", strings.Join(args, " "))
 	err := cmd.Run()
 	if err != nil {
 		fmt.Fprintf(writer, "[DockPulse] Command finished with error: %v\n", err)

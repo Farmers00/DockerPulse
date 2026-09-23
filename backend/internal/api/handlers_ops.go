@@ -354,6 +354,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME}/docker:/root/docker
+    environment:
+      - HOST_BASE_DIR=${HOME}/docker
     command: >
       agent
       --server %s
@@ -396,6 +398,8 @@ func (s *Server) handleAgentComposeTemplate(c *gin.Context) {
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME}/docker:/root/docker
+    environment:
+      - HOST_BASE_DIR=${HOME}/docker
     command: >
       agent
       --server %s
