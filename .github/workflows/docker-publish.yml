@@ -10,7 +10,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: farmers00/dockerpulse
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build-and-push:
