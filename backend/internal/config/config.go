@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -15,6 +16,7 @@ type Config struct {
 	ProxyAuthHeader   string // e.g. "Remote-User" or "X-Forwarded-User"
 	ProxyEmailHeader  string // e.g. "Remote-Email"
 	UpdateIntervalMin int
+	Image             string
 }
 
 func LoadConfig() *Config {
@@ -53,6 +55,15 @@ func LoadConfig() *Config {
 		updateInterval = u
 	}
 
+	image := os.Getenv("AGENT_IMAGE")
+	if image == "" {
+		if repo := os.Getenv("GITHUB_REPOSITORY"); repo != "" {
+			image = "ghcr.io/" + strings.ToLower(repo) + ":latest"
+		} else {
+			image = "ghcr.io/farmers00/dockerpulse:latest"
+		}
+	}
+
 	return &Config{
 		Port:              port,
 		DataDir:           dataDir,
@@ -61,6 +72,7 @@ func LoadConfig() *Config {
 		ProxyAuthHeader:   proxyAuthHeader,
 		ProxyEmailHeader:  proxyEmailHeader,
 		UpdateIntervalMin: updateInterval,
+		Image:             image,
 	}
 }
 

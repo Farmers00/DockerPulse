@@ -291,6 +291,7 @@ func (s *Server) handleAgentWS(c *gin.Context) {
 func (s *Server) handleGetAgentToken(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"token": s.cfg.AgentSecret,
+		"image": s.cfg.Image,
 	})
 }
 
@@ -335,7 +336,7 @@ USER_HOME=$(getent passwd "$ACTUAL_USER" 2>/dev/null | cut -d: -f6)
 if [ -z "$USER_HOME" ]; then
   USER_HOME="$HOME"
 fi
-TARGET_DIR="$USER_HOME/docker/dockerpulse-agent"
+TARGET_DIR="${TARGET_DIR:-$USER_HOME/docker/dockerpulse-agent}"
 
 echo "[DockerPulse] Host ID:     $HOST_ID"
 echo "[DockerPulse] Server URL:  $SERVER_URL"
@@ -348,7 +349,7 @@ echo "[DockerPulse] Writing docker-compose.yml..."
 cat << 'EOF' > docker-compose.yml
 services:
   dockerpulse-agent:
-    image: ghcr.io/farmers00/dockerpulse:latest
+    image: %s
     container_name: dockerpulse-agent
     restart: unless-stopped
     volumes:
@@ -373,7 +374,7 @@ echo "======================================================"
 echo " DockerPulse Agent container is now running!"
 echo " Host '$HOST_ID' connected to $SERVER_URL"
 echo "======================================================"
-`, hostID, token, wsURL, serverURL, wsURL, token, hostID)
+`, hostID, token, wsURL, serverURL, s.cfg.Image, wsURL, token, hostID)
 
 	c.Header("Content-Type", "text/x-shellscript; charset=utf-8")
 	c.String(http.StatusOK, script)
@@ -392,7 +393,7 @@ func (s *Server) handleAgentComposeTemplate(c *gin.Context) {
 
 	template := fmt.Sprintf(`services:
   dockerpulse-agent:
-    image: ghcr.io/farmers00/dockerpulse:latest
+    image: %s
     container_name: dockerpulse-agent
     restart: unless-stopped
     volumes:
@@ -406,7 +407,7 @@ func (s *Server) handleAgentComposeTemplate(c *gin.Context) {
       --token %s
       --host-id %s
       --base-dir /root/docker
-`, wsURL, token, hostID)
+`, s.cfg.Image, wsURL, token, hostID)
 
 	c.Header("Content-Type", "text/yaml; charset=utf-8")
 	c.String(http.StatusOK, template)
