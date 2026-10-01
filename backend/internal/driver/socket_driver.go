@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -21,11 +22,20 @@ type hostMount struct {
 	Destination string
 }
 
+type cpuSample struct {
+	TotalUsage  uint64
+	SystemUsage uint64
+	Timestamp   time.Time
+}
+
 type SocketDriver struct {
 	client     *DockerClient
 	mountsMu   sync.Mutex
 	mounts     []hostMount
 	mountsInit bool
+
+	cpuMu    sync.Mutex
+	prevCPUs map[string]cpuSample
 }
 
 func NewSocketDriver(hostAddress string) (*SocketDriver, error) {
@@ -33,7 +43,10 @@ func NewSocketDriver(hostAddress string) (*SocketDriver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create docker client: %w", err)
 	}
-	return &SocketDriver{client: c}, nil
+	return &SocketDriver{
+		client:   c,
+		prevCPUs: make(map[string]cpuSample),
+	}, nil
 }
 
 func (d *SocketDriver) Ping(ctx context.Context) error {
@@ -235,9 +248,9 @@ func (d *SocketDriver) ListContainers(ctx context.Context) ([]ContainerInfo, err
 		result = append(result, info)
 	}
 
-	// Fetch quick stats in parallel for running containers with a 1.5s overall cap
+	// Fetch quick stats in parallel for running containers with a 3s overall cap
 	var wg sync.WaitGroup
-	statsCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	statsCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
 	for i := range result {
@@ -252,6 +265,20 @@ func (d *SocketDriver) ListContainers(ctx context.Context) ([]ContainerInfo, err
 	wg.Wait()
 
 	return result, nil
+}
+
+func parseUint64(v interface{}) uint64 {
+	switch val := v.(type) {
+	case float64:
+		return uint64(val)
+	case int64:
+		return uint64(val)
+	case uint64:
+		return val
+	case int:
+		return uint64(val)
+	}
+	return 0
 }
 
 func (d *SocketDriver) populateContainerStats(ctx context.Context, id string, info *ContainerInfo) {
@@ -287,28 +314,83 @@ func (d *SocketDriver) populateContainerStats(ctx context.Context, id string, in
 		return
 	}
 
-	cpuDelta := float64(stats.CPUStats.CPUUsage.TotalUsage) - float64(stats.PreCPUStats.CPUUsage.TotalUsage)
-	systemDelta := float64(stats.CPUStats.SystemUsage) - float64(stats.PreCPUStats.SystemUsage)
+	currentTotal := stats.CPUStats.CPUUsage.TotalUsage
+	currentSystem := stats.CPUStats.SystemUsage
 	onlineCPUs := float64(stats.CPUStats.OnlineCPUs)
 	if onlineCPUs == 0 {
 		onlineCPUs = 1
 	}
 
+	d.cpuMu.Lock()
+	if d.prevCPUs == nil {
+		d.prevCPUs = make(map[string]cpuSample)
+	}
+	prev, hasPrev := d.prevCPUs[id]
+	d.prevCPUs[id] = cpuSample{
+		TotalUsage:  currentTotal,
+		SystemUsage: currentSystem,
+		Timestamp:   time.Now(),
+	}
+	d.cpuMu.Unlock()
+
+	var cpuDelta float64
+	var systemDelta float64
+
+	if hasPrev && prev.TotalUsage > 0 && currentTotal >= prev.TotalUsage {
+		cpuDelta = float64(currentTotal - prev.TotalUsage)
+		if currentSystem > prev.SystemUsage {
+			systemDelta = float64(currentSystem - prev.SystemUsage)
+		} else {
+			elapsedNano := time.Since(prev.Timestamp).Nanoseconds()
+			if elapsedNano > 0 {
+				systemDelta = float64(elapsedNano)
+			}
+		}
+	} else if stats.PreCPUStats.CPUUsage.TotalUsage > 0 && stats.PreCPUStats.SystemUsage > 0 {
+		cpuDelta = float64(currentTotal) - float64(stats.PreCPUStats.CPUUsage.TotalUsage)
+		systemDelta = float64(currentSystem) - float64(stats.PreCPUStats.SystemUsage)
+	}
+
 	if systemDelta > 0 && cpuDelta > 0 {
 		cpuPct := (cpuDelta / systemDelta) * onlineCPUs * 100.0
-		info.CPUPct = float64(int(cpuPct*100)) / 100
+		if cpuPct > onlineCPUs*100.0 {
+			cpuPct = onlineCPUs * 100.0
+		}
+		info.CPUPct = math.Round(cpuPct*10) / 10
+	} else {
+		info.CPUPct = 0.0
 	}
 
+	// Memory usage: match Docker CLI by subtracting inactive_file / cache
 	usedMem := stats.MemoryStats.Usage
-	info.MemoryMB = float64(usedMem) / (1024 * 1024)
-	if stats.MemoryStats.Limit > 0 {
-		info.MemoryPct = float64(int((float64(usedMem)/float64(stats.MemoryStats.Limit))*10000)) / 100
+	if statsMap := stats.MemoryStats.Stats; statsMap != nil {
+		var cache uint64
+		if v, ok := statsMap["inactive_file"]; ok {
+			cache = parseUint64(v)
+		} else if v, ok := statsMap["total_inactive_file"]; ok {
+			cache = parseUint64(v)
+		} else if v, ok := statsMap["cache"]; ok {
+			cache = parseUint64(v)
+		}
+		if usedMem > cache {
+			usedMem -= cache
+		}
 	}
 
+	info.MemoryMB = math.Round((float64(usedMem)/(1024*1024))*10) / 10
+	if stats.MemoryStats.Limit > 0 {
+		pct := (float64(usedMem) / float64(stats.MemoryStats.Limit)) * 100.0
+		info.MemoryPct = math.Round(pct*10) / 10
+	}
+
+	info.NetInputMB = 0
+	info.NetOutputMB = 0
 	for _, n := range stats.Networks {
 		info.NetInputMB += float64(n.RxBytes) / (1024 * 1024)
 		info.NetOutputMB += float64(n.TxBytes) / (1024 * 1024)
 	}
+	info.NetInputMB = math.Round(info.NetInputMB*10) / 10
+	info.NetOutputMB = math.Round(info.NetOutputMB*10) / 10
 }
 
 func (d *SocketDriver) StartContainer(ctx context.Context, id string) error {

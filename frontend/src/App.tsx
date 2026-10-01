@@ -192,6 +192,26 @@ export const App: React.FC = () => {
     }
   }, [selectedHostId]);
 
+  // Periodic container live stats refresh every 5 seconds (zero overhead when tab hidden)
+  useEffect(() => {
+    if (!selectedHostId) return;
+
+    const interval = setInterval(() => {
+      // Skip if browser tab is hidden, background directory scan in progress, or modal update executing
+      if (document.hidden || scanning || updateAction) return;
+
+      api.listContainers(selectedHostId)
+        .then((fresh) => {
+          if (Array.isArray(fresh)) {
+            setContainers(fresh);
+          }
+        })
+        .catch(() => {});
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [selectedHostId, scanning, updateAction]);
+
   const refreshHostData = async () => {
     if (!selectedHostId) return;
     setLoading(true);
@@ -755,39 +775,39 @@ export const App: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Middle: Live Stats (CPU / RAM / Net) */}
+                    {/* Middle: Live Stats (CPU / RAM / Net) with fixed column widths for straight vertical alignment */}
                     <div className="flex items-center gap-6 text-xs font-mono text-slate-300 shrink-0">
-                      <div>
+                      <div className="w-28 shrink-0">
                         <span className="text-[10px] text-slate-500 block">CPU</span>
                         <div className="flex items-center gap-1.5">
-                          <span className="font-semibold">{(c.cpu_pct || 0).toFixed(1)}%</span>
-                          <div className="w-16 bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                          <span className="font-semibold w-11 text-left">{(c.cpu_pct || 0).toFixed(1)}%</span>
+                          <div className="w-14 bg-slate-800 h-1.5 rounded-full overflow-hidden shrink-0">
                             <div
-                              className="bg-sky-500 h-full rounded-full"
+                              className="bg-sky-500 h-full rounded-full transition-all duration-300"
                               style={{ width: `${Math.min(c.cpu_pct || 0, 100)}%` }}
                             />
                           </div>
                         </div>
                       </div>
 
-                      <div>
+                      <div className="w-32 shrink-0">
                         <span className="text-[10px] text-slate-500 block">MEM</span>
-                        <span className="font-semibold">
+                        <span className="font-semibold truncate block" title={`${(c.memory_mb || 0).toFixed(0)} MB (${(c.memory_pct || 0).toFixed(0)}%)`}>
                           {(c.memory_mb || 0).toFixed(0)} MB{' '}
                           <span className="text-slate-500">({(c.memory_pct || 0).toFixed(0)}%)</span>
                         </span>
                       </div>
 
-                      <div>
+                      <div className="w-36 shrink-0">
                         <span className="text-[10px] text-slate-500 block">NET I/O</span>
-                        <span>
+                        <span className="truncate block" title={`${(c.net_input_mb || 0).toFixed(1)}M / ${(c.net_output_mb || 0).toFixed(1)}M`}>
                           {(c.net_input_mb || 0).toFixed(1)}M / {(c.net_output_mb || 0).toFixed(1)}M
                         </span>
                       </div>
                     </div>
 
                     {/* Right: Actions */}
-                    <div className="flex items-center gap-1.5 shrink-0">
+                    <div className="flex items-center justify-end gap-1.5 w-[160px] shrink-0">
                       {isRunning ? (
                         <>
                           <button
