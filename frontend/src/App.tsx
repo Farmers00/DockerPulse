@@ -32,8 +32,7 @@ import { ComposeEditorModal } from './components/ComposeEditorModal';
 import { UpdateModal } from './components/UpdateModal';
 import { NetworksModal } from './components/NetworksModal';
 import { StorageModal } from './components/StorageModal';
-import { AddHostModal } from './components/AddHostModal';
-import { DeployAgentModal } from './components/DeployAgentModal';
+import { AddClientModal } from './components/AddClientModal';
 import { HostSettingsModal } from './components/HostSettingsModal';
 import { AuthModal } from './components/AuthModal';
 import { APP_VERSION } from './version';
@@ -134,8 +133,7 @@ export const App: React.FC = () => {
   const [updateAction, setUpdateAction] = useState<{ stack?: Stack; stacks?: Stack[]; action: string } | null>(null);
   const [showNetworks, setShowNetworks] = useState(false);
   const [showStorage, setShowStorage] = useState(false);
-  const [showAddHost, setShowAddHost] = useState(false);
-  const [showDeployAgent, setShowDeployAgent] = useState(false);
+  const [showAddClient, setShowAddClient] = useState(false);
   const [showHostSettings, setShowHostSettings] = useState(false);
   const [fleetStats, setFleetStats] = useState<Record<string, { running: number; total: number; updates: number }>>({});
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
@@ -520,19 +518,11 @@ export const App: React.FC = () => {
             )}
 
             <button
-              onClick={() => setShowAddHost(true)}
-              className="flex items-center gap-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors"
+              onClick={() => setShowAddClient(true)}
+              className="flex items-center gap-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 px-3 py-1.5 text-xs font-semibold text-white shadow-sm shadow-sky-600/20 transition-all"
             >
-              <Plus className="w-3.5 h-3.5 text-sky-400" />
-              Add Server
-            </button>
-
-            <button
-              onClick={() => setShowDeployAgent(true)}
-              className="flex items-center gap-1.5 rounded-lg bg-sky-600/10 hover:bg-sky-600/20 border border-sky-500/30 px-3 py-1.5 text-xs font-medium text-sky-400 transition-colors"
-            >
-              <Cpu className="w-3.5 h-3.5" />
-              Deploy Agent
+              <Plus className="w-3.5 h-3.5" />
+              Add Client
             </button>
           </div>
 
@@ -649,10 +639,10 @@ export const App: React.FC = () => {
                 <Server className="w-4 h-4" /> Connect Local Server
               </button>
               <button
-                onClick={() => setShowDeployAgent(true)}
+                onClick={() => setShowAddClient(true)}
                 className="flex items-center gap-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 px-5 py-2.5 text-xs font-semibold text-slate-200 transition-colors"
               >
-                <Cpu className="w-4 h-4 text-sky-400" /> Deploy Remote Agent
+                <Plus className="w-4 h-4 text-sky-400" /> Add Client
               </button>
             </div>
           </div>
@@ -1200,19 +1190,9 @@ export const App: React.FC = () => {
         />
       )}
 
-      {showAddHost && (
-        <AddHostModal
-          onClose={() => setShowAddHost(false)}
-          onAdded={(newHost) => {
-            setHosts((prev) => [...prev, newHost]);
-            setSelectedHostId(newHost.id);
-          }}
-        />
-      )}
-
-      {showDeployAgent && (
-        <DeployAgentModal
-          onClose={() => setShowDeployAgent(false)}
+      {showAddClient && (
+        <AddClientModal
+          onClose={() => setShowAddClient(false)}
           hosts={hostList}
           onRefreshHosts={loadHosts}
           onSelectHost={(id) => setSelectedHostId(id)}
