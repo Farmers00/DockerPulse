@@ -112,7 +112,8 @@ export const App: React.FC = () => {
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [containers, setContainers] = useState<ContainerInfo[]>([]);
   const [stacks, setStacks] = useState<Stack[]>([]);
-  const [updates, setUpdates] = useState<Record<string, boolean>>({});
+  const [updatesByHost, setUpdatesByHost] = useState<Record<string, Record<string, boolean>>>({});
+  const updates = useMemo(() => updatesByHost[selectedHostId] || {}, [updatesByHost, selectedHostId]);
 
   const [viewMode, setViewMode] = useState<'containers' | 'stacks'>('containers');
   const [loading, setLoading] = useState(false);
@@ -183,11 +184,11 @@ export const App: React.FC = () => {
     }
   };
 
-  // Load host data when selectedHostId changes
+  // Load host data and check updates whenever navigating to a server page
   useEffect(() => {
     if (selectedHostId) {
-      setUpdates({});
       refreshHostData();
+      handleCheckUpdates(true, selectedHostId);
     }
   }, [selectedHostId]);
 
@@ -243,11 +244,12 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleCheckUpdates = async (silent = false) => {
-    if (!selectedHostId) return;
+  const handleCheckUpdates = async (silent = false, targetHostId?: string) => {
+    const hostId = targetHostId || selectedHostId;
+    if (!hostId) return;
     try {
       setCheckingUpdates(true);
-      const results = await api.checkUpdates(selectedHostId);
+      const results = await api.checkUpdates(hostId);
       const map: Record<string, boolean> = {};
       (Array.isArray(results) ? results : []).forEach((r) => {
         if (r.has_update) {
@@ -270,12 +272,15 @@ export const App: React.FC = () => {
           }
         }
       });
-      setUpdates(map);
+      setUpdatesByHost((prev) => ({
+        ...prev,
+        [hostId]: map,
+      }));
     } catch (err: any) {
       if (!silent) {
         alert(err.message || 'Update check failed');
       } else {
-        console.warn('Daily update check failed:', err);
+        console.warn('Update check failed:', err);
       }
     } finally {
       setCheckingUpdates(false);
@@ -307,12 +312,16 @@ export const App: React.FC = () => {
         if (Array.isArray(list)) {
           const rCount = list.filter((c) => c && c.state === 'running').length;
           const uCount = list.filter((c) => c && c.has_update).length;
+          const hostUpdates = updatesByHost[h.id];
+          const realUpdateCount = hostUpdates
+            ? list.filter((c) => isContainerUpdateAvailable(c, hostUpdates)).length
+            : uCount;
           setFleetStats((prev) => ({
             ...prev,
             [h.id]: {
               running: rCount,
               total: list.length,
-              updates: uCount > 0 ? uCount : prev[h.id]?.updates || 0,
+              updates: realUpdateCount > 0 ? realUpdateCount : prev[h.id]?.updates || 0,
             },
           }));
         }
@@ -320,21 +329,7 @@ export const App: React.FC = () => {
         // host offline
       }
     });
-  }, [hosts]);
-
-  // Daily auto-update check per host on first visit each day
-  useEffect(() => {
-    if (!selectedHostId || loading) return;
-
-    const today = new Date().toISOString().slice(0, 10);
-    const key = `dockerpulse_daily_update_${selectedHostId}`;
-    const lastChecked = localStorage.getItem(key);
-
-    if (lastChecked !== today) {
-      localStorage.setItem(key, today);
-      handleCheckUpdates(true);
-    }
-  }, [selectedHostId, loading]);
+  }, [hosts, updatesByHost]);
 
   const handleContainerOp = async (cid: string, op: 'start' | 'stop' | 'restart' | 'remove') => {
     try {
@@ -679,11 +674,14 @@ export const App: React.FC = () => {
             )}
 
             <button
-              onClick={refreshHostData}
-              disabled={loading}
+              onClick={() => {
+                refreshHostData();
+                handleCheckUpdates(true, selectedHostId);
+              }}
+              disabled={loading || checkingUpdates}
               className="flex items-center gap-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`w-3.5 h-3.5 ${loading || checkingUpdates ? 'animate-spin' : ''}`} />
               Refresh
             </button>
           </div>
