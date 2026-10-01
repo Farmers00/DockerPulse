@@ -1077,11 +1077,29 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 				composeSubCmd = "restart"
 			}
 
-			cmdScript := fmt.Sprintf("sleep 2 && docker compose -f %s --project-directory %s %s",
-				composeFile,
-				hostPath,
-				composeSubCmd,
-			)
+			helperImage := "ghcr.io/farmers00/dockerpulse:latest"
+			var detail struct {
+				Config struct {
+					Image string `json:"Image"`
+				} `json:"Config"`
+			}
+			if err := d.client.Get(ctx, "/containers/"+selfRef+"/json", &detail); err == nil && detail.Config.Image != "" {
+				helperImage = detail.Config.Image
+			}
+
+			var helperCmdParts []string
+			helperCmdParts = append(helperCmdParts, "docker", "compose", "-f", fmt.Sprintf("%q", filepath.ToSlash(composeFile)))
+			if fileExists(envFile) {
+				helperCmdParts = append(helperCmdParts, "--env-file", fmt.Sprintf("%q", filepath.ToSlash(envFile)))
+			}
+			if hostPath != "" {
+				helperCmdParts = append(helperCmdParts, "--project-directory", fmt.Sprintf("%q", filepath.ToSlash(hostPath)))
+			}
+			helperCmdParts = append(helperCmdParts, composeSubCmd)
+
+			cmdScript := fmt.Sprintf("sleep 2 && %s", strings.Join(helperCmdParts, " "))
+			fmt.Fprintf(writer, "[DockPulse] Helper command: %s\n", strings.Join(helperCmdParts, " "))
+
 			// Ensure any previous helper container with this name is removed first
 			_ = exec.Command("docker", "rm", "-f", "dockerpulse-updater-helper").Run()
 
@@ -1092,7 +1110,7 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 				"-v", "/var/run/docker.sock:/var/run/docker.sock",
 				"--volumes-from", selfRef,
 				"-w", containerPath,
-				"ghcr.io/farmers00/dockerpulse:latest",
+				helperImage,
 				"-c", cmdScript,
 			)
 
@@ -1107,7 +1125,7 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 						"-v", "/var/run/docker.sock:/var/run/docker.sock",
 						"--volumes-from", "dockerpulse-agent",
 						"-w", containerPath,
-						"ghcr.io/farmers00/dockerpulse:latest",
+						helperImage,
 						"-c", cmdScript,
 					)
 					if out2, err2 := runnerCmd2.CombinedOutput(); err2 == nil {
