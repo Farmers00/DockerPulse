@@ -370,7 +370,9 @@ export const App: React.FC = () => {
       if (op === 'stop') await api.stopContainer(selectedHostId, cid);
       if (op === 'restart') await api.restartContainer(selectedHostId, cid);
       if (op === 'remove') {
-        if (!confirm('Remove container?')) return;
+        const targetContainer = containers.find((c) => c.id === cid);
+        const cName = targetContainer?.names[0]?.replace('/', '') || cid.slice(0, 12);
+        if (!window.confirm(`Are you sure you want to remove container "${cName}"?\n\nThis will permanently delete the container.`)) return;
         await api.removeContainer(selectedHostId, cid, true);
       }
       refreshHostData();
