@@ -28,14 +28,24 @@ type cpuSample struct {
 	Timestamp   time.Time
 }
 
+type containerStatsSnapshot struct {
+	CPUPct      float64
+	MemoryMB    float64
+	MemoryPct   float64
+	NetInputMB  float64
+	NetOutputMB float64
+	UpdatedAt   time.Time
+}
+
 type SocketDriver struct {
 	client     *DockerClient
 	mountsMu   sync.Mutex
 	mounts     []hostMount
 	mountsInit bool
 
-	cpuMu    sync.Mutex
-	prevCPUs map[string]cpuSample
+	cpuMu     sync.Mutex
+	prevCPUs  map[string]cpuSample
+	lastStats map[string]containerStatsSnapshot
 }
 
 func NewSocketDriver(hostAddress string) (*SocketDriver, error) {
@@ -44,8 +54,9 @@ func NewSocketDriver(hostAddress string) (*SocketDriver, error) {
 		return nil, fmt.Errorf("failed to create docker client: %w", err)
 	}
 	return &SocketDriver{
-		client:   c,
-		prevCPUs: make(map[string]cpuSample),
+		client:    c,
+		prevCPUs:  make(map[string]cpuSample),
+		lastStats: make(map[string]containerStatsSnapshot),
 	}, nil
 }
 
@@ -248,16 +259,32 @@ func (d *SocketDriver) ListContainers(ctx context.Context) ([]ContainerInfo, err
 		result = append(result, info)
 	}
 
-	// Fetch quick stats in parallel for running containers with a 3s overall cap
+	// Fetch quick stats in parallel for running containers with worker concurrency pool
 	var wg sync.WaitGroup
-	statsCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	statsCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
+	sem := make(chan struct{}, 8)
 
 	for i := range result {
 		if result[i].State == "running" {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }()
+				case <-statsCtx.Done():
+					d.cpuMu.Lock()
+					if cached, ok := d.lastStats[result[idx].ID]; ok {
+						result[idx].CPUPct = cached.CPUPct
+						result[idx].MemoryMB = cached.MemoryMB
+						result[idx].MemoryPct = cached.MemoryPct
+						result[idx].NetInputMB = cached.NetInputMB
+						result[idx].NetOutputMB = cached.NetOutputMB
+					}
+					d.cpuMu.Unlock()
+					return
+				}
 				d.populateContainerStats(statsCtx, result[idx].ID, &result[idx])
 			}(i)
 		}
@@ -282,7 +309,7 @@ func parseUint64(v interface{}) uint64 {
 }
 
 func (d *SocketDriver) populateContainerStats(ctx context.Context, id string, info *ContainerInfo) {
-	statsCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	statsCtx, cancel := context.WithTimeout(ctx, 3500*time.Millisecond)
 	defer cancel()
 
 	var stats struct {
@@ -308,9 +335,30 @@ func (d *SocketDriver) populateContainerStats(ctx context.Context, id string, in
 			RxBytes uint64 `json:"rx_bytes"`
 			TxBytes uint64 `json:"tx_bytes"`
 		} `json:"networks"`
+		Network struct {
+			RxBytes uint64 `json:"rx_bytes"`
+			TxBytes uint64 `json:"tx_bytes"`
+		} `json:"network"`
 	}
 
-	if err := d.client.Get(statsCtx, fmt.Sprintf("/containers/%s/stats?stream=false", id), &stats); err != nil {
+	// First attempt with one-shot=true for instantaneous return without 1-second CPU delta blocking
+	err := d.client.Get(statsCtx, fmt.Sprintf("/containers/%s/stats?stream=false&one-shot=true", id), &stats)
+	if err != nil {
+		// Fallback to standard stream=false if one-shot is rejected or fails
+		err = d.client.Get(statsCtx, fmt.Sprintf("/containers/%s/stats?stream=false", id), &stats)
+	}
+
+	if err != nil {
+		// If transient failure or timeout, fallback to last known good stats
+		d.cpuMu.Lock()
+		if cached, ok := d.lastStats[id]; ok {
+			info.CPUPct = cached.CPUPct
+			info.MemoryMB = cached.MemoryMB
+			info.MemoryPct = cached.MemoryPct
+			info.NetInputMB = cached.NetInputMB
+			info.NetOutputMB = cached.NetOutputMB
+		}
+		d.cpuMu.Unlock()
 		return
 	}
 
@@ -364,6 +412,11 @@ func (d *SocketDriver) populateContainerStats(ctx context.Context, id string, in
 	// Memory usage: match Docker CLI by subtracting inactive_file / cache
 	usedMem := stats.MemoryStats.Usage
 	if statsMap := stats.MemoryStats.Stats; statsMap != nil {
+		if usedMem == 0 {
+			anon := parseUint64(statsMap["anon"])
+			file := parseUint64(statsMap["file"])
+			usedMem = anon + file
+		}
 		var cache uint64
 		if v, ok := statsMap["inactive_file"]; ok {
 			cache = parseUint64(v)
@@ -372,7 +425,7 @@ func (d *SocketDriver) populateContainerStats(ctx context.Context, id string, in
 		} else if v, ok := statsMap["cache"]; ok {
 			cache = parseUint64(v)
 		}
-		if usedMem > cache {
+		if cache < usedMem {
 			usedMem -= cache
 		}
 	}
@@ -389,8 +442,27 @@ func (d *SocketDriver) populateContainerStats(ctx context.Context, id string, in
 		info.NetInputMB += float64(n.RxBytes) / (1024 * 1024)
 		info.NetOutputMB += float64(n.TxBytes) / (1024 * 1024)
 	}
+	if len(stats.Networks) == 0 && (stats.Network.RxBytes > 0 || stats.Network.TxBytes > 0) {
+		info.NetInputMB = float64(stats.Network.RxBytes) / (1024 * 1024)
+		info.NetOutputMB = float64(stats.Network.TxBytes) / (1024 * 1024)
+	}
 	info.NetInputMB = math.Round(info.NetInputMB*10) / 10
 	info.NetOutputMB = math.Round(info.NetOutputMB*10) / 10
+
+	// Save to lastStats cache
+	d.cpuMu.Lock()
+	if d.lastStats == nil {
+		d.lastStats = make(map[string]containerStatsSnapshot)
+	}
+	d.lastStats[id] = containerStatsSnapshot{
+		CPUPct:      info.CPUPct,
+		MemoryMB:    info.MemoryMB,
+		MemoryPct:   info.MemoryPct,
+		NetInputMB:  info.NetInputMB,
+		NetOutputMB: info.NetOutputMB,
+		UpdatedAt:   time.Now(),
+	}
+	d.cpuMu.Unlock()
 }
 
 func (d *SocketDriver) StartContainer(ctx context.Context, id string) error {

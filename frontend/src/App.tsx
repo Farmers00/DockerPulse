@@ -216,7 +216,23 @@ export const App: React.FC = () => {
       api.listContainers(selectedHostId)
         .then((fresh) => {
           if (Array.isArray(fresh)) {
-            setContainers(fresh);
+            setContainers((prev) => {
+              const prevMap = new Map(prev.map((c) => [c.id, c]));
+              return fresh.map((c) => {
+                const old = prevMap.get(c.id);
+                if (old && c.state === 'running' && c.memory_mb === 0 && old.memory_mb > 0) {
+                  return {
+                    ...c,
+                    cpu_pct: c.cpu_pct > 0 ? c.cpu_pct : old.cpu_pct,
+                    memory_mb: old.memory_mb,
+                    memory_pct: old.memory_pct,
+                    net_input_mb: c.net_input_mb > 0 ? c.net_input_mb : old.net_input_mb,
+                    net_output_mb: c.net_output_mb > 0 ? c.net_output_mb : old.net_output_mb,
+                  };
+                }
+                return c;
+              });
+            });
           }
         })
         .catch(() => {});
