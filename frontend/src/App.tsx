@@ -22,10 +22,11 @@ import {
   AlertCircle,
   Cpu,
   Settings,
-  MoreVertical
+  MoreVertical,
+  Bell
 } from 'lucide-react';
 import { api } from './api/client';
-import { Host, ContainerInfo, Stack, SystemInfo, User } from './types';
+import { Host, ContainerInfo, Stack, SystemInfo, User, InAppNotification } from './types';
 import { LiveLogsModal } from './components/LiveLogsModal';
 import { TerminalModal } from './components/TerminalModal';
 import { ComposeEditorModal } from './components/ComposeEditorModal';
@@ -35,6 +36,8 @@ import { StorageModal } from './components/StorageModal';
 import { AddClientModal } from './components/AddClientModal';
 import { HostSettingsModal } from './components/HostSettingsModal';
 import { AuthModal } from './components/AuthModal';
+import { NotificationsDrawer } from './components/NotificationsDrawer';
+import { SettingsView } from './components/Settings/SettingsView';
 import { APP_VERSION } from './version';
 
 function matchesStack(c: ContainerInfo, s: Stack): boolean {
@@ -122,9 +125,15 @@ export const App: React.FC = () => {
   const updates = useMemo(() => updatesByHost[selectedHostId] || {}, [updatesByHost, selectedHostId]);
 
   const [viewMode, setViewMode] = useState<'containers' | 'stacks'>('containers');
+  const [currentView, setCurrentView] = useState<'dashboard' | 'settings'>('dashboard');
   const [loading, setLoading] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
+
+  // In-App Notifications
+  const [notifications, setNotifications] = useState<InAppNotification[]>([]);
+  const [unreadCount, setUnreadCount] = useState<number>(0);
+  const [showNotificationsDrawer, setShowNotificationsDrawer] = useState(false);
 
   // Active Modals
   const [logContainer, setLogContainer] = useState<ContainerInfo | null>(null);
@@ -137,6 +146,49 @@ export const App: React.FC = () => {
   const [showHostSettings, setShowHostSettings] = useState(false);
   const [fleetStats, setFleetStats] = useState<Record<string, { running: number; total: number; updates: number }>>({});
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
+
+  const loadNotifications = async () => {
+    try {
+      const [list, unreadRes] = await Promise.all([
+        api.listNotifications(100),
+        api.getUnreadNotificationCount(),
+      ]);
+      setNotifications(list);
+      setUnreadCount(unreadRes.unread_count);
+    } catch (err) {
+      console.error('Failed to load notifications:', err);
+    }
+  };
+
+  const handleDismissNotification = async (id: string) => {
+    try {
+      await api.dismissNotification(id);
+      setNotifications((prev) => prev.filter((n) => n.id !== id));
+      setUnreadCount((prev) => Math.max(0, prev - 1));
+    } catch (err) {
+      console.error('Failed to dismiss notification:', err);
+    }
+  };
+
+  const handleDismissAllNotifications = async () => {
+    try {
+      await api.clearAllNotifications();
+      setNotifications([]);
+      setUnreadCount(0);
+    } catch (err) {
+      console.error('Failed to dismiss all notifications:', err);
+    }
+  };
+
+  const handleMarkAllRead = async () => {
+    try {
+      await api.markAllNotificationsRead();
+      setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+      setUnreadCount(0);
+    } catch (err) {
+      console.error('Failed to mark all read:', err);
+    }
+  };
 
   // Close container action dropdown when clicking outside
   useEffect(() => {
@@ -153,6 +205,15 @@ export const App: React.FC = () => {
   useEffect(() => {
     checkAuth();
   }, []);
+
+  // Poll notifications when logged in
+  useEffect(() => {
+    if (user) {
+      loadNotifications();
+      const interval = setInterval(loadNotifications, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [user]);
 
   const checkAuth = async () => {
     try {
@@ -363,6 +424,7 @@ export const App: React.FC = () => {
       }
     } finally {
       setCheckingUpdates(false);
+      loadNotifications();
     }
   };
 
@@ -466,6 +528,26 @@ export const App: React.FC = () => {
     );
   }
 
+  if (currentView === 'settings') {
+    return (
+      <>
+        <SettingsView
+          onBackToDashboard={() => setCurrentView('dashboard')}
+          currentUser={user}
+          onUserUpdated={setUser}
+        />
+        <NotificationsDrawer
+          isOpen={showNotificationsDrawer}
+          onClose={() => setShowNotificationsDrawer(false)}
+          notifications={notifications}
+          onDismiss={handleDismissNotification}
+          onDismissAll={handleDismissAllNotifications}
+          onMarkAllRead={handleMarkAllRead}
+        />
+      </>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col selection:bg-sky-500/30">
       {/* Top Navbar */}
@@ -555,6 +637,30 @@ export const App: React.FC = () => {
               Check Updates
             </button>
 
+            {/* Notifications Drawer Toggle */}
+            <button
+              onClick={() => setShowNotificationsDrawer(true)}
+              title="Notifications"
+              className="relative rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-colors"
+            >
+              <Bell className="w-4 h-4" />
+              {unreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] font-bold font-mono text-white bg-rose-500 rounded-full border-2 border-slate-900 shadow-sm animate-in zoom-in-50">
+                  {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
+              )}
+            </button>
+
+            {/* System Settings Gear Icon */}
+            <button
+              onClick={() => setCurrentView('settings')}
+              title="System Settings"
+              className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-sky-400 transition-colors"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+
+            {/* Sign Out Button */}
             <button
               onClick={() => {
                 localStorage.removeItem('dockpulse_token');
@@ -562,7 +668,7 @@ export const App: React.FC = () => {
                 setAuthNeeded(true);
               }}
               title="Sign Out"
-              className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-colors ml-1"
+              className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-colors ml-0.5"
             >
               <LogOut className="w-4 h-4" />
             </button>
@@ -1233,6 +1339,16 @@ export const App: React.FC = () => {
           <span>v{APP_VERSION}</span>
         </div>
       </div>
+
+      {/* Notifications Left Slide-over Drawer */}
+      <NotificationsDrawer
+        isOpen={showNotificationsDrawer}
+        onClose={() => setShowNotificationsDrawer(false)}
+        notifications={notifications}
+        onDismiss={handleDismissNotification}
+        onDismissAll={handleDismissAllNotifications}
+        onMarkAllRead={handleMarkAllRead}
+      />
     </div>
   );
 };
