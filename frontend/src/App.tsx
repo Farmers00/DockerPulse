@@ -36,6 +36,7 @@ import { AddHostModal } from './components/AddHostModal';
 import { DeployAgentModal } from './components/DeployAgentModal';
 import { HostSettingsModal } from './components/HostSettingsModal';
 import { AuthModal } from './components/AuthModal';
+import { APP_VERSION } from './version';
 
 function matchesStack(c: ContainerInfo, s: Stack): boolean {
   if (!c || !s) return false;
@@ -1241,6 +1242,17 @@ export const App: React.FC = () => {
           }}
         />
       )}
+
+      {/* Bottom Left Version Tag */}
+      <div className="fixed bottom-3.5 left-4 z-30 pointer-events-none select-none">
+        <div
+          title={`DockerPulse v${APP_VERSION}`}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900/90 border border-slate-800/80 backdrop-blur-md text-[11px] font-mono text-slate-400 shadow-lg pointer-events-auto hover:text-slate-200 hover:border-slate-700 transition-colors"
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-sm shadow-emerald-400/50" />
+          <span>v{APP_VERSION}</span>
+        </div>
+      </div>
     </div>
   );
 };
