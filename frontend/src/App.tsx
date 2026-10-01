@@ -110,9 +110,14 @@ export const App: React.FC = () => {
 
   const [hosts, setHosts] = useState<Host[]>([]);
   const [selectedHostId, setSelectedHostId] = useState<string>('');
-  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
-  const [containers, setContainers] = useState<ContainerInfo[]>([]);
-  const [stacks, setStacks] = useState<Stack[]>([]);
+  const [containersByHost, setContainersByHost] = useState<Record<string, ContainerInfo[]>>({});
+  const [stacksByHost, setStacksByHost] = useState<Record<string, Stack[]>>({});
+  const [systemByHost, setSystemByHost] = useState<Record<string, SystemInfo | null>>({});
+
+  const containers = useMemo(() => containersByHost[selectedHostId] || [], [containersByHost, selectedHostId]);
+  const stacks = useMemo(() => stacksByHost[selectedHostId] || [], [stacksByHost, selectedHostId]);
+  const systemInfo = useMemo(() => systemByHost[selectedHostId] || null, [systemByHost, selectedHostId]);
+
   const [updatesByHost, setUpdatesByHost] = useState<Record<string, Record<string, boolean>>>({});
   const updates = useMemo(() => updatesByHost[selectedHostId] || {}, [updatesByHost, selectedHostId]);
 
@@ -216,9 +221,10 @@ export const App: React.FC = () => {
       api.listContainers(selectedHostId)
         .then((fresh) => {
           if (Array.isArray(fresh)) {
-            setContainers((prev) => {
-              const prevMap = new Map(prev.map((c) => [c.id, c]));
-              return fresh.map((c) => {
+            setContainersByHost((prev) => {
+              const currentForHost = prev[selectedHostId] || [];
+              const prevMap = new Map(currentForHost.map((c) => [c.id, c]));
+              const merged = fresh.map((c) => {
                 const old = prevMap.get(c.id);
                 if (old && c.state === 'running' && c.memory_mb === 0 && old.memory_mb > 0) {
                   return {
@@ -232,6 +238,10 @@ export const App: React.FC = () => {
                 }
                 return c;
               });
+              return {
+                ...prev,
+                [selectedHostId]: merged,
+              };
             });
           }
         })
@@ -241,27 +251,45 @@ export const App: React.FC = () => {
     return () => clearInterval(interval);
   }, [selectedHostId, scanning, updateAction]);
 
-  const refreshHostData = async () => {
-    if (!selectedHostId) return;
-    setLoading(true);
+  const refreshHostData = async (targetHostId?: string) => {
+    const hostId = targetHostId || selectedHostId;
+    if (!hostId) return;
+
+    // If no cached data exists yet for this host, indicate loading
+    setContainersByHost((curr) => {
+      if (!curr[hostId] || curr[hostId].length === 0) {
+        setLoading(true);
+      }
+      return curr;
+    });
+
     try {
       const [cList, sList, sys] = await Promise.all([
-        api.listContainers(selectedHostId).catch((err) => {
+        api.listContainers(hostId).catch((err) => {
           console.error('Failed to list containers:', err);
           return [];
         }),
-        api.listStacks(selectedHostId).catch((err) => {
+        api.listStacks(hostId).catch((err) => {
           console.error('Failed to list stacks:', err);
           return [];
         }),
-        api.getHostSystem(selectedHostId).catch((err) => {
+        api.getHostSystem(hostId).catch((err) => {
           console.error('Failed to get host system:', err);
           return null;
         }),
       ]);
-      setContainers(Array.isArray(cList) ? cList : []);
-      setStacks(Array.isArray(sList) ? sList : []);
-      setSystemInfo(sys);
+      setContainersByHost((prev) => ({
+        ...prev,
+        [hostId]: Array.isArray(cList) ? cList : [],
+      }));
+      setStacksByHost((prev) => ({
+        ...prev,
+        [hostId]: Array.isArray(sList) ? sList : [],
+      }));
+      setSystemByHost((prev) => ({
+        ...prev,
+        [hostId]: sys,
+      }));
     } finally {
       setLoading(false);
     }
@@ -272,7 +300,10 @@ export const App: React.FC = () => {
     try {
       setScanning(true);
       const discovered = await api.discoverStacks(selectedHostId);
-      setStacks(Array.isArray(discovered) ? discovered : []);
+      setStacksByHost((prev) => ({
+        ...prev,
+        [selectedHostId]: Array.isArray(discovered) ? discovered : [],
+      }));
       loadHosts();
     } catch (err: any) {
       alert(err.message || 'Discovery failed');
@@ -336,22 +367,29 @@ export const App: React.FC = () => {
     }
   };
 
-  // Sync fleetStats for current selected host
+  // Synchronize fleetStats atomically per host to prevent cross-host update count flapping
   useEffect(() => {
-    if (!selectedHostId) return;
-    const running = containerList.filter((c) => c && c.state === 'running').length;
-    const updateCount = containerList.filter((c) => isContainerUpdateAvailable(c, updates)).length;
-    setFleetStats((prev) => ({
-      ...prev,
-      [selectedHostId]: {
-        running,
-        total: containerList.length,
-        updates: updateCount,
-      },
-    }));
-  }, [selectedHostId, containers, updates]);
+    if (hosts.length === 0) return;
+    setFleetStats((prev) => {
+      const next = { ...prev };
+      hosts.forEach((h) => {
+        const hContainers = containersByHost[h.id];
+        if (hContainers) {
+          const running = hContainers.filter((c) => c && c.state === 'running').length;
+          const hUpdates = updatesByHost[h.id] || {};
+          const updateCount = hContainers.filter((c) => isContainerUpdateAvailable(c, hUpdates)).length;
+          next[h.id] = {
+            running,
+            total: hContainers.length,
+            updates: updateCount,
+          };
+        }
+      });
+      return next;
+    });
+  }, [hosts, containersByHost, updatesByHost]);
 
-  // Background fetch container counts for other fleet hosts
+  // Background warm containers cache for other fleet hosts so switching servers is instant
   useEffect(() => {
     if (hosts.length === 0) return;
     hosts.forEach(async (h) => {
@@ -359,26 +397,19 @@ export const App: React.FC = () => {
       try {
         const list = await api.listContainers(h.id);
         if (Array.isArray(list)) {
-          const rCount = list.filter((c) => c && c.state === 'running').length;
-          const uCount = list.filter((c) => c && c.has_update).length;
-          const hostUpdates = updatesByHost[h.id];
-          const realUpdateCount = hostUpdates
-            ? list.filter((c) => isContainerUpdateAvailable(c, hostUpdates)).length
-            : uCount;
-          setFleetStats((prev) => ({
-            ...prev,
-            [h.id]: {
-              running: rCount,
-              total: list.length,
-              updates: realUpdateCount > 0 ? realUpdateCount : prev[h.id]?.updates || 0,
-            },
-          }));
+          setContainersByHost((prev) => {
+            if (prev[h.id] && prev[h.id].length > 0) return prev;
+            return {
+              ...prev,
+              [h.id]: list,
+            };
+          });
         }
       } catch {
         // host offline
       }
     });
-  }, [hosts, updatesByHost]);
+  }, [hosts]);
 
   const handleContainerOp = async (cid: string, op: 'start' | 'stop' | 'restart' | 'remove') => {
     try {
@@ -741,7 +772,12 @@ export const App: React.FC = () => {
         {/* Containers List View */}
         {viewMode === 'containers' && (
           <div className="space-y-3">
-            {containerList.length === 0 ? (
+            {loading && containerList.length === 0 ? (
+              <div className="py-16 text-center text-slate-400 font-mono text-sm border border-dashed border-slate-800/80 rounded-xl flex flex-col items-center justify-center gap-3">
+                <RefreshCw className="w-5 h-5 text-sky-400 animate-spin" />
+                <span>Connecting to server and loading containers...</span>
+              </div>
+            ) : containerList.length === 0 ? (
               <div className="py-16 text-center text-slate-500 font-mono text-sm border border-dashed border-slate-800 rounded-xl">
                 No containers detected on this host.
               </div>
@@ -949,7 +985,12 @@ export const App: React.FC = () => {
         {/* Compose Stacks View */}
         {viewMode === 'stacks' && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {stackList.length === 0 ? (
+            {loading && stackList.length === 0 ? (
+              <div className="col-span-2 py-16 text-center text-slate-400 font-mono text-sm border border-dashed border-slate-800/80 rounded-xl flex flex-col items-center justify-center gap-3">
+                <RefreshCw className="w-5 h-5 text-sky-400 animate-spin" />
+                <span>Loading Compose stacks...</span>
+              </div>
+            ) : stackList.length === 0 ? (
               <div className="col-span-2 py-16 text-center text-slate-500 font-mono text-sm border border-dashed border-slate-800 rounded-xl">
                 No Compose stacks discovered. Click "Scan Directory" to find stacks in {currentHost?.base_dir || '~/docker'}.
               </div>
@@ -1185,7 +1226,9 @@ export const App: React.FC = () => {
             setHosts((prev) => prev.map((h) => (h.id === updated.id ? updated : h)));
             // Trigger stack discovery for updated path
             api.discoverStacks(updated.id).then((disc) => {
-              if (Array.isArray(disc)) setStacks(disc);
+              if (Array.isArray(disc)) {
+                setStacksByHost((prev) => ({ ...prev, [updated.id]: disc }));
+              }
             }).catch(() => {});
           }}
           onDeleted={(delId) => {
