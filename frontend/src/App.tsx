@@ -21,7 +21,8 @@ import {
   CheckCircle2,
   AlertCircle,
   Cpu,
-  Settings
+  Settings,
+  MoreVertical
 } from 'lucide-react';
 import { api } from './api/client';
 import { Host, ContainerInfo, Stack, SystemInfo, User } from './types';
@@ -131,6 +132,18 @@ export const App: React.FC = () => {
   const [showDeployAgent, setShowDeployAgent] = useState(false);
   const [showHostSettings, setShowHostSettings] = useState(false);
   const [fleetStats, setFleetStats] = useState<Record<string, { running: number; total: number; updates: number }>>({});
+  const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
+
+  // Close container action dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement)?.closest('[data-dropdown="container-actions"]')) {
+        setOpenActionMenuId(null);
+      }
+    };
+    window.addEventListener('click', handleClickOutside);
+    return () => window.removeEventListener('click', handleClickOutside);
+  }, []);
 
   // Check auth status on boot
   useEffect(() => {
@@ -766,7 +779,7 @@ export const App: React.FC = () => {
                           )}
                         </div>
                         <div className="flex items-center gap-2 text-xs text-slate-400 font-mono mt-0.5 min-w-0">
-                          <span className="truncate max-w-[200px] sm:max-w-[260px] md:max-w-[320px]" title={c.image}>
+                          <span className="truncate max-w-xs sm:max-w-md lg:max-w-lg xl:max-w-xl" title={c.image}>
                             {formatImage(c.image)}
                           </span>
                           <span className="shrink-0">&bull;</span>
@@ -806,58 +819,107 @@ export const App: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Right: Actions */}
-                    <div className="flex items-center justify-end gap-1.5 w-[160px] shrink-0">
-                      {isRunning ? (
-                        <>
-                          <button
-                            onClick={() => handleContainerOp(c.id, 'restart')}
-                            title="Restart"
-                            className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-colors"
-                          >
-                            <RotateCw className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => handleContainerOp(c.id, 'stop')}
-                            title="Stop"
-                            className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-amber-400 transition-colors"
-                          >
-                            <Square className="w-4 h-4" />
-                          </button>
-                        </>
-                      ) : (
-                        <button
-                          onClick={() => handleContainerOp(c.id, 'start')}
-                          title="Start"
-                          className="rounded-lg p-2 text-emerald-400 hover:bg-emerald-500/10 transition-colors"
+                    {/* Right: Actions Dropdown */}
+                    <div className="relative shrink-0 flex items-center justify-end" data-dropdown="container-actions">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenActionMenuId(openActionMenuId === c.id ? null : c.id);
+                        }}
+                        title="Container Actions"
+                        className={`flex items-center justify-center w-8 h-8 rounded-lg border transition-all ${
+                          openActionMenuId === c.id
+                            ? 'bg-slate-800 text-slate-100 border-slate-600 shadow-sm'
+                            : 'bg-slate-800/40 text-slate-400 hover:bg-slate-800 hover:text-slate-200 border-slate-800 hover:border-slate-700'
+                        }`}
+                      >
+                        <MoreVertical className="w-4 h-4" />
+                      </button>
+
+                      {openActionMenuId === c.id && (
+                        <div
+                          className="absolute right-0 top-full mt-1.5 z-30 w-44 rounded-xl border border-slate-700/80 bg-slate-900/95 shadow-xl backdrop-blur-md p-1.5 space-y-0.5"
+                          onClick={(e) => e.stopPropagation()}
                         >
-                          <Play className="w-4 h-4" />
-                        </button>
+                          {isRunning ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOpenActionMenuId(null);
+                                  handleContainerOp(c.id, 'restart');
+                                }}
+                                className="group w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-slate-100 hover:bg-slate-800/80 transition-colors text-left"
+                              >
+                                <RotateCw className="w-4 h-4 text-slate-400 group-hover:text-slate-200 transition-colors" />
+                                <span>Restart</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOpenActionMenuId(null);
+                                  handleContainerOp(c.id, 'stop');
+                                }}
+                                className="group w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-amber-400 hover:bg-amber-500/10 transition-colors text-left"
+                              >
+                                <Square className="w-4 h-4 text-slate-400 group-hover:text-amber-400 transition-colors" />
+                                <span>Stop</span>
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionMenuId(null);
+                                handleContainerOp(c.id, 'start');
+                              }}
+                              className="group w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-emerald-400 hover:bg-emerald-500/10 transition-colors text-left"
+                            >
+                              <Play className="w-4 h-4 text-emerald-400 group-hover:text-emerald-300 transition-colors" />
+                              <span>Start</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenActionMenuId(null);
+                              setLogContainer(c);
+                            }}
+                            className="group w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-sky-400 hover:bg-sky-500/10 transition-colors text-left"
+                          >
+                            <FileText className="w-4 h-4 text-slate-400 group-hover:text-sky-400 transition-colors" />
+                            <span>Live Logs</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenActionMenuId(null);
+                              setTerminalContainer(c);
+                            }}
+                            className="group w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-purple-400 hover:bg-purple-500/10 transition-colors text-left"
+                          >
+                            <Terminal className="w-4 h-4 text-slate-400 group-hover:text-purple-400 transition-colors" />
+                            <span>Terminal</span>
+                          </button>
+
+                          <div className="my-1 border-t border-slate-800" />
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenActionMenuId(null);
+                              handleContainerOp(c.id, 'remove');
+                            }}
+                            className="group w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition-colors text-left"
+                          >
+                            <Trash2 className="w-4 h-4 text-slate-500 group-hover:text-rose-400 transition-colors" />
+                            <span>Remove</span>
+                          </button>
+                        </div>
                       )}
-
-                      <button
-                        onClick={() => setLogContainer(c)}
-                        title="Live Logs (-f)"
-                        className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-sky-400 transition-colors"
-                      >
-                        <FileText className="w-4 h-4" />
-                      </button>
-
-                      <button
-                        onClick={() => setTerminalContainer(c)}
-                        title="Interactive Shell (Terminal)"
-                        className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-purple-400 transition-colors"
-                      >
-                        <Terminal className="w-4 h-4" />
-                      </button>
-
-                      <button
-                        onClick={() => handleContainerOp(c.id, 'remove')}
-                        title="Remove container"
-                        className="rounded-lg p-2 text-slate-500 hover:bg-rose-500/10 hover:text-rose-400 transition-colors"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
                     </div>
                   </div>
                 );
