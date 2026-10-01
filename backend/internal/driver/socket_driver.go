@@ -1159,6 +1159,8 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 				helperImage = detail.Config.Image
 			}
 
+			userEnv := parseEnvFile(envFile)
+
 			var helperCmdParts []string
 			helperCmdParts = append(helperCmdParts, "docker", "compose", "-f", fmt.Sprintf("%q", filepath.ToSlash(composeFile)))
 			if fileExists(envFile) {
@@ -1169,37 +1171,61 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 			}
 			helperCmdParts = append(helperCmdParts, composeSubCmd)
 
-			cmdScript := fmt.Sprintf("sleep 2 && %s", strings.Join(helperCmdParts, " "))
-			fmt.Fprintf(writer, "[DockPulse] Helper command: %s\n", strings.Join(helperCmdParts, " "))
+			composeExec := strings.Join(helperCmdParts, " ")
+
+			var scriptParts []string
+			scriptParts = append(scriptParts, "unset PORT DATA_DIR JWT_SECRET AGENT_SECRET HOST_BASE_DIR CONTAINER_BASE_DIR PROXY_AUTH_HEADER PROXY_EMAIL_HEADER UPDATE_INTERVAL_MINUTES")
+			for k, v := range userEnv {
+				scriptParts = append(scriptParts, fmt.Sprintf("export %s=%s", k, shellQuote(v)))
+			}
+			scriptParts = append(scriptParts, "sleep 2")
+			scriptParts = append(scriptParts, composeExec)
+
+			cmdScript := strings.Join(scriptParts, " && ")
+			fmt.Fprintf(writer, "[DockPulse] Helper command: %s\n", composeExec)
+			if len(userEnv) > 0 {
+				var exportedKeys []string
+				for k := range userEnv {
+					exportedKeys = append(exportedKeys, k)
+				}
+				fmt.Fprintf(writer, "[DockPulse] Exported environment from .env: %s\n", strings.Join(exportedKeys, ", "))
+			}
 
 			// Ensure any previous helper container with this name is removed first
 			_ = exec.Command("docker", "rm", "-f", "dockerpulse-updater-helper").Run()
 
-			runnerCmd := exec.Command("docker", "run", "--rm", "-d",
+			runArgs := []string{
+				"run", "--rm", "-d",
 				"--name", "dockerpulse-updater-helper",
 				"--label", "com.dockerpulse.helper=true",
 				"--entrypoint", "sh",
 				"-v", "/var/run/docker.sock:/var/run/docker.sock",
 				"--volumes-from", selfRef,
 				"-w", containerPath,
-				helperImage,
-				"-c", cmdScript,
-			)
+			}
+			if _, hasPort := userEnv["PORT"]; !hasPort {
+				runArgs = append(runArgs, "-e", "PORT=")
+			}
+			for k, v := range userEnv {
+				runArgs = append(runArgs, "-e", fmt.Sprintf("%s=%s", k, v))
+			}
+			runArgs = append(runArgs, helperImage, "-c", cmdScript)
+
+			runnerCmd := exec.Command("docker", runArgs...)
 
 			out, err := runnerCmd.CombinedOutput()
 			if err != nil {
 				_ = exec.Command("docker", "rm", "-f", "dockerpulse-updater-helper").Run()
 				if selfRef != "dockerpulse-agent" {
-					runnerCmd2 := exec.Command("docker", "run", "--rm", "-d",
-						"--name", "dockerpulse-updater-helper",
-						"--label", "com.dockerpulse.helper=true",
-						"--entrypoint", "sh",
-						"-v", "/var/run/docker.sock:/var/run/docker.sock",
-						"--volumes-from", "dockerpulse-agent",
-						"-w", containerPath,
-						helperImage,
-						"-c", cmdScript,
-					)
+					runArgs2 := make([]string, len(runArgs))
+					copy(runArgs2, runArgs)
+					for i, arg := range runArgs2 {
+						if arg == "--volumes-from" && i+1 < len(runArgs2) {
+							runArgs2[i+1] = "dockerpulse-agent"
+							break
+						}
+					}
+					runnerCmd2 := exec.Command("docker", runArgs2...)
 					if out2, err2 := runnerCmd2.CombinedOutput(); err2 == nil {
 						out = out2
 						err = nil
@@ -1250,9 +1276,93 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 	}
 }
 
+var dockerPulseInternalVars = map[string]bool{
+	"PORT":                    true,
+	"DATA_DIR":                true,
+	"JWT_SECRET":              true,
+	"AGENT_SECRET":            true,
+	"HOST_BASE_DIR":           true,
+	"CONTAINER_BASE_DIR":      true,
+	"PROXY_AUTH_HEADER":       true,
+	"PROXY_EMAIL_HEADER":      true,
+	"UPDATE_INTERVAL_MINUTES": true,
+}
+
+func parseEnvFile(p string) map[string]string {
+	res := make(map[string]string)
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return res
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "export ") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+		}
+		idx := strings.Index(line, "=")
+		if idx == -1 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
+
+		if (strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"") && len(val) >= 2) ||
+			(strings.HasPrefix(val, "'") && strings.HasSuffix(val, "'") && len(val) >= 2) {
+			val = val[1 : len(val)-1]
+		} else {
+			if commentIdx := strings.Index(val, " #"); commentIdx != -1 {
+				val = strings.TrimSpace(val[:commentIdx])
+			}
+		}
+
+		if key != "" {
+			res[key] = val
+		}
+	}
+	return res
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func buildComposeEnv(workingDir string) []string {
+	envFile := filepath.Join(workingDir, ".env")
+	userEnv := parseEnvFile(envFile)
+
+	var result []string
+	for _, env := range os.Environ() {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) == 2 {
+			k := parts[0]
+			if dockerPulseInternalVars[k] {
+				if _, ok := userEnv[k]; !ok {
+					continue
+				}
+			}
+			if _, ok := userEnv[k]; ok {
+				continue
+			}
+			result = append(result, env)
+		}
+	}
+
+	for k, v := range userEnv {
+		result = append(result, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	return result
+}
+
 func (d *SocketDriver) runComposeCmd(ctx context.Context, workingDir string, args []string, writer io.Writer) error {
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = workingDir
+	cmd.Env = buildComposeEnv(workingDir)
 	cmd.Stdout = writer
 	cmd.Stderr = writer
 
