@@ -1163,9 +1163,97 @@ func (d *SocketDriver) DiscoverStacks(ctx context.Context, baseDir string) ([]Di
 	return stacks, nil
 }
 
+func (d *SocketDriver) findStackComposeFile(ctx context.Context, stackPath string) (containerPath, hostPath, composeFile string) {
+	containerPath = d.ToContainerPath(ctx, stackPath)
+	hostPath = d.ToHostPath(ctx, stackPath)
+
+	// 1. Is containerPath directly a compose file?
+	if fileExists(containerPath) {
+		return filepath.Dir(containerPath), filepath.Dir(hostPath), containerPath
+	}
+
+	// 2. Is stackPath directly a compose file on disk?
+	if fileExists(stackPath) {
+		return filepath.Dir(stackPath), filepath.Dir(stackPath), stackPath
+	}
+
+	// 3. Does containerPath contain a compose file?
+	if cf := findComposeFile(containerPath); cf != "" {
+		return containerPath, hostPath, cf
+	}
+
+	// 4. Does stackPath contain a compose file?
+	if cf := findComposeFile(stackPath); cf != "" {
+		return stackPath, hostPath, cf
+	}
+
+	// 5. Check mounts: does any mounted folder match the base directory of stackPath?
+	baseName := filepath.Base(stackPath)
+	if baseName != "" && baseName != "." && baseName != "/" {
+		for _, m := range d.getMounts(ctx) {
+			candidateDir := filepath.Join(m.Destination, baseName)
+			if cf := findComposeFile(candidateDir); cf != "" {
+				return candidateDir, filepath.Join(m.Source, baseName), cf
+			}
+		}
+	}
+
+	// 6. Query running/stopped containers for Compose labels matching this stack or container name
+	if d.client != nil {
+		var containers []rawContainer
+		if err := d.client.Get(ctx, "/containers/json?all=1", &containers); err == nil {
+			for _, c := range containers {
+				proj := c.Labels["com.docker.compose.project"]
+				matched := false
+				if proj != "" && (strings.EqualFold(proj, baseName) || strings.EqualFold(proj, stackPath)) {
+					matched = true
+				} else {
+					for _, name := range c.Names {
+						trimmed := strings.TrimPrefix(name, "/")
+						if strings.EqualFold(trimmed, baseName) || strings.EqualFold(trimmed, stackPath) {
+							matched = true
+							break
+						}
+					}
+				}
+
+				if matched {
+					cfg := c.Labels["com.docker.compose.project.config_files"]
+					wdir := c.Labels["com.docker.compose.project.working_dir"]
+					if wdir != "" && (hostPath == "" || hostPath == stackPath) {
+						hostPath = wdir
+					}
+					if cfg != "" {
+						for _, p := range strings.Split(cfg, ",") {
+							p = strings.TrimSpace(p)
+							cP := d.ToContainerPath(ctx, p)
+							if fileExists(cP) {
+								return filepath.Dir(cP), filepath.Dir(p), cP
+							}
+							if fileExists(p) {
+								return filepath.Dir(p), filepath.Dir(p), p
+							}
+						}
+					}
+					if wdir != "" {
+						cWdir := d.ToContainerPath(ctx, wdir)
+						if cf := findComposeFile(cWdir); cf != "" {
+							return cWdir, wdir, cf
+						}
+						if cf := findComposeFile(wdir); cf != "" {
+							return wdir, wdir, cf
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return containerPath, hostPath, ""
+}
+
 func (d *SocketDriver) ReadStackFiles(ctx context.Context, stackPath string) (string, string, error) {
-	containerPath := d.ToContainerPath(ctx, stackPath)
-	composeFile := findComposeFile(containerPath)
+	containerPath, _, composeFile := d.findStackComposeFile(ctx, stackPath)
 	if composeFile == "" {
 		return "", "", fmt.Errorf("no compose file found in %s", stackPath)
 	}
@@ -1180,9 +1268,9 @@ func (d *SocketDriver) ReadStackFiles(ctx context.Context, stackPath string) (st
 }
 
 func (d *SocketDriver) WriteStackFiles(ctx context.Context, stackPath string, composeContent string, envContent string) error {
-	containerPath := d.ToContainerPath(ctx, stackPath)
-	composeFile := findComposeFile(containerPath)
+	containerPath, _, composeFile := d.findStackComposeFile(ctx, stackPath)
 	if composeFile == "" {
+		containerPath = d.ToContainerPath(ctx, stackPath)
 		composeFile = filepath.Join(containerPath, "docker-compose.yml")
 	}
 
@@ -1203,31 +1291,61 @@ func (d *SocketDriver) WriteStackFiles(ctx context.Context, stackPath string, co
 	return nil
 }
 
-func isSelfUpdate(containerPath string) bool {
-	composeFile := findComposeFile(containerPath)
+func (d *SocketDriver) isSelfUpdate(ctx context.Context, stackPath, containerPath, composeFile string) bool {
+	lowerStack := strings.ToLower(stackPath)
+	lowerContainer := strings.ToLower(containerPath)
+	if strings.Contains(lowerStack, "dockerpulse") || strings.Contains(lowerContainer, "dockerpulse") {
+		return true
+	}
 	if composeFile != "" {
-		content, err := os.ReadFile(composeFile)
-		if err == nil && strings.Contains(strings.ToLower(string(content)), "dockerpulse") {
-			return true
+		if content, err := os.ReadFile(composeFile); err == nil {
+			lower := strings.ToLower(string(content))
+			if strings.Contains(lower, "dockerpulse") || strings.Contains(lower, "farmers00/dockerpulse") {
+				return true
+			}
 		}
 	}
-	return strings.Contains(strings.ToLower(containerPath), "dockerpulse")
+	hostname, _ := os.Hostname()
+	candidates := []string{hostname, "dockerpulse", "dockerpulse-agent"}
+	if d.client != nil {
+		for _, cid := range candidates {
+			if cid == "" {
+				continue
+			}
+			var detail struct {
+				Config struct {
+					Labels map[string]string `json:"Labels"`
+				} `json:"Config"`
+			}
+			if err := d.client.Get(ctx, "/containers/"+cid+"/json", &detail); err == nil {
+				proj := detail.Config.Labels["com.docker.compose.project"]
+				if proj != "" {
+					base := filepath.Base(stackPath)
+					if strings.EqualFold(proj, base) || strings.EqualFold(proj, stackPath) {
+						return true
+					}
+				}
+				break
+			}
+		}
+	}
+	return false
 }
 
 func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, action string, writer io.Writer) error {
-	containerPath := d.ToContainerPath(ctx, stackPath)
-	hostPath := d.ToHostPath(ctx, stackPath)
-	composeFile := findComposeFile(containerPath)
+	containerPath, hostPath, composeFile := d.findStackComposeFile(ctx, stackPath)
 	if composeFile == "" {
-		return fmt.Errorf("no compose file found in %s", stackPath)
+		err := fmt.Errorf("no compose file found for stack '%s' (checked container path: %s, host path: %s)", filepath.Base(stackPath), containerPath, hostPath)
+		fmt.Fprintf(writer, "[DockerPulse] Error: %v\n", err)
+		return err
 	}
 
 	envFile := filepath.Join(containerPath, ".env")
 
 	// Detect top-level 'name:' issues and notify user, without automatically modifying user files
 	if hasIssue, oldName, proposedName := detectComposeNameIssue(composeFile); hasIssue {
-		fmt.Fprintf(writer, "[DockPulse] WARNING: Top-level 'name: %s' in %s violates Docker Compose v2 naming rules (pattern '^[a-z0-9][a-z0-9_-]*$').\n", oldName, filepath.Base(composeFile))
-		fmt.Fprintf(writer, "[DockPulse] Suggested fix: 'name: %s'. You can apply this fix or edit the file in DockerPulse.\n", proposedName)
+		fmt.Fprintf(writer, "[DockerPulse] WARNING: Top-level 'name: %s' in %s violates Docker Compose v2 naming rules (pattern '^[a-z0-9][a-z0-9_-]*$').\n", oldName, filepath.Base(composeFile))
+		fmt.Fprintf(writer, "[DockerPulse] Suggested fix: 'name: %s'. You can apply this fix or edit the file in DockerPulse.\n", proposedName)
 	}
 
 	baseArgs := []string{"compose", "-f", composeFile}
@@ -1238,15 +1356,31 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 		baseArgs = append(baseArgs, "--project-directory", hostPath)
 	}
 
+	isSelf := d.isSelfUpdate(ctx, stackPath, containerPath, composeFile)
+
 	switch action {
-	case "up", "restart":
-		if isSelfUpdate(containerPath) {
-			fmt.Fprintf(writer, "[DockPulse] Detected self-update/restart of DockerPulse at %s\n", hostPath)
-			fmt.Fprintln(writer, "[DockPulse] Spawning detached helper runner to safely restart container...")
+	case "up", "restart", "pull_up":
+		if isSelf {
+			actionTitle := action
+			if action == "pull_up" {
+				actionTitle = "update"
+			}
+			fmt.Fprintf(writer, "[DockerPulse] Detected self-%s of DockerPulse at %s\n", actionTitle, hostPath)
+			if action == "pull_up" {
+				fmt.Fprintln(writer, "[DockerPulse] Pulling latest DockerPulse image...")
+				pullArgs := append([]string{}, baseArgs...)
+				pullArgs = append(pullArgs, "pull")
+				if pullErr := d.runComposeCmd(ctx, containerPath, pullArgs, writer); pullErr != nil {
+					fmt.Fprintf(writer, "[DockerPulse] Warning: direct compose pull returned: %v. Helper will attempt pull.\n", pullErr)
+				} else {
+					fmt.Fprintln(writer, "[DockerPulse] Image pulled successfully.")
+				}
+			}
+			fmt.Fprintln(writer, "[DockerPulse] Spawning detached helper runner to safely restart container...")
 
 			selfRef, _ := os.Hostname()
 			if selfRef == "" {
-				selfRef = "dockerpulse-agent"
+				selfRef = "dockerpulse"
 			}
 
 			composeSubCmd := "up -d"
@@ -1261,6 +1395,8 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 				} `json:"Config"`
 			}
 			if err := d.client.Get(ctx, "/containers/"+selfRef+"/json", &detail); err == nil && detail.Config.Image != "" {
+				helperImage = detail.Config.Image
+			} else if err := d.client.Get(ctx, "/containers/dockerpulse/json", &detail); err == nil && detail.Config.Image != "" {
 				helperImage = detail.Config.Image
 			}
 
@@ -1287,13 +1423,13 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 			scriptParts = append(scriptParts, composeExec)
 
 			cmdScript := strings.Join(scriptParts, " && ")
-			fmt.Fprintf(writer, "[DockPulse] Helper command: %s\n", composeExec)
+			fmt.Fprintf(writer, "[DockerPulse] Helper command: %s\n", composeExec)
 			if len(userEnv) > 0 {
 				var exportedKeys []string
 				for k := range userEnv {
 					exportedKeys = append(exportedKeys, k)
 				}
-				fmt.Fprintf(writer, "[DockPulse] Exported environment from .env: %s\n", strings.Join(exportedKeys, ", "))
+				fmt.Fprintf(writer, "[DockerPulse] Exported environment from .env: %s\n", strings.Join(exportedKeys, ", "))
 			}
 
 			// Ensure any previous helper container with this name is removed first
@@ -1308,6 +1444,9 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 				"--volumes-from", selfRef,
 				"-w", containerPath,
 			}
+			if hostPath != "" && hostPath != containerPath {
+				runArgs = append(runArgs, "-v", fmt.Sprintf("%s:%s", hostPath, hostPath))
+			}
 			if _, hasPort := userEnv["PORT"]; !hasPort {
 				runArgs = append(runArgs, "-e", "PORT=")
 			}
@@ -1321,21 +1460,26 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 			out, err := runnerCmd.CombinedOutput()
 			if err != nil {
 				_ = exec.Command("docker", "rm", "-f", "dockerpulse-updater-helper").Run()
-				if selfRef != "dockerpulse-agent" {
-					runArgs2 := make([]string, len(runArgs))
-					copy(runArgs2, runArgs)
-					for i, arg := range runArgs2 {
-						if arg == "--volumes-from" && i+1 < len(runArgs2) {
-							runArgs2[i+1] = "dockerpulse-agent"
-							break
+				// Fallback to try dockerpulse then dockerpulse-agent for --volumes-from
+				fallbacks := []string{"dockerpulse", "dockerpulse-agent"}
+				for _, fb := range fallbacks {
+					if selfRef != fb {
+						runArgsFallback := make([]string, len(runArgs))
+						copy(runArgsFallback, runArgs)
+						for i, arg := range runArgsFallback {
+							if arg == "--volumes-from" && i+1 < len(runArgsFallback) {
+								runArgsFallback[i+1] = fb
+								break
+							}
 						}
-					}
-					runnerCmd2 := exec.Command("docker", runArgs2...)
-					if out2, err2 := runnerCmd2.CombinedOutput(); err2 == nil {
-						out = out2
-						err = nil
-					} else {
-						_ = exec.Command("docker", "rm", "-f", "dockerpulse-updater-helper").Run()
+						runnerCmdFallback := exec.Command("docker", runArgsFallback...)
+						if outFb, errFb := runnerCmdFallback.CombinedOutput(); errFb == nil {
+							out = outFb
+							err = nil
+							break
+						} else {
+							_ = exec.Command("docker", "rm", "-f", "dockerpulse-updater-helper").Run()
+						}
 					}
 				}
 			}
@@ -1345,13 +1489,20 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 				if len(cid) > 12 {
 					cid = cid[:12]
 				}
-				fmt.Fprintf(writer, "[DockPulse] Detached runner container launched (ID: %s).\n", cid)
-				fmt.Fprintf(writer, "[DockPulse] Container will %s in 2 seconds with updated image.\n", action)
-				fmt.Fprintln(writer, "[DockPulse] Command completed successfully.")
+				fmt.Fprintf(writer, "[DockerPulse] Detached runner container launched (ID: %s).\n", cid)
+				fmt.Fprintf(writer, "[DockerPulse] Container will %s in 2 seconds with updated image.\n", action)
+				fmt.Fprintln(writer, "[DockerPulse] Command completed successfully.")
 				return nil
 			}
 
-			fmt.Fprintf(writer, "[DockPulse] Detached runner failed (%v: %s), falling back to direct compose\n", err, strings.TrimSpace(string(out)))
+			fmt.Fprintf(writer, "[DockerPulse] Detached runner failed (%v: %s), falling back to direct compose\n", err, strings.TrimSpace(string(out)))
+		}
+
+		if action == "pull_up" {
+			pullArgs := append(append([]string{}, baseArgs...), "pull")
+			if err := d.runComposeCmd(ctx, containerPath, pullArgs, writer); err != nil {
+				return err
+			}
 		}
 
 		args := append([]string{}, baseArgs...)
@@ -1369,12 +1520,6 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 	case "pull":
 		args := append(append([]string{}, baseArgs...), "pull")
 		return d.runComposeCmd(ctx, containerPath, args, writer)
-
-	case "pull_up":
-		if err := d.ExecuteCompose(ctx, stackPath, "pull", writer); err != nil {
-			return err
-		}
-		return d.ExecuteCompose(ctx, stackPath, "up", writer)
 
 	default:
 		return fmt.Errorf("unsupported compose action: %s", action)

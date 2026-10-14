@@ -255,7 +255,9 @@ func (s *Server) handleComposeAction(c *gin.Context) {
 	pipeR, pipeW := io.Pipe()
 	go func() {
 		defer pipeW.Close()
-		_ = d.ExecuteCompose(c.Request.Context(), stack.Path, req.Action, pipeW)
+		if err := d.ExecuteCompose(c.Request.Context(), stack.Path, req.Action, pipeW); err != nil {
+			fmt.Fprintf(pipeW, "\n[DockerPulse] Command finished with error: %v\n", err)
+		}
 	}()
 
 	buf := make([]byte, 1024)
