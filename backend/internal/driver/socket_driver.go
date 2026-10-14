@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -961,7 +962,24 @@ func (d *SocketDriver) getMounts(ctx context.Context) []hostMount {
 		}
 	}
 
+	d.ensureMountSymlinks()
 	return d.mounts
+}
+
+func (d *SocketDriver) ensureMountSymlinks() {
+	if runtime.GOOS == "windows" {
+		return
+	}
+	for _, m := range d.mounts {
+		if m.Source == "" || m.Destination == "" || m.Source == m.Destination {
+			continue
+		}
+		if _, err := os.Lstat(m.Source); err != nil {
+			parent := filepath.Dir(m.Source)
+			_ = os.MkdirAll(parent, 0755)
+			_ = os.Symlink(m.Destination, m.Source)
+		}
+	}
 }
 
 func (d *SocketDriver) ToHostPath(ctx context.Context, p string) string {
@@ -1348,9 +1366,31 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 		fmt.Fprintf(writer, "[DockerPulse] Suggested fix: 'name: %s'. You can apply this fix or edit the file in DockerPulse.\n", proposedName)
 	}
 
+	// Ensure hostPath is accessible inside the container via symlink to containerPath
+	if runtime.GOOS != "windows" && hostPath != "" && containerPath != "" && hostPath != containerPath {
+		if _, err := os.Lstat(hostPath); err != nil {
+			parent := filepath.Dir(hostPath)
+			_ = os.MkdirAll(parent, 0755)
+			_ = os.Symlink(containerPath, hostPath)
+		}
+	}
+
+	// If compose file references env_file but no .env file exists on disk, create an empty one to prevent compose exit error
+	if !fileExists(envFile) {
+		if composeBytes, err := os.ReadFile(composeFile); err == nil {
+			if strings.Contains(string(composeBytes), "env_file") {
+				_ = os.WriteFile(envFile, []byte(""), 0644)
+			}
+		}
+	}
+
 	baseArgs := []string{"compose", "-f", composeFile}
 	if fileExists(envFile) {
-		baseArgs = append(baseArgs, "--env-file", envFile)
+		if hostPath != "" {
+			baseArgs = append(baseArgs, "--env-file", filepath.Join(hostPath, ".env"))
+		} else {
+			baseArgs = append(baseArgs, "--env-file", envFile)
+		}
 	}
 	if hostPath != "" {
 		baseArgs = append(baseArgs, "--project-directory", hostPath)

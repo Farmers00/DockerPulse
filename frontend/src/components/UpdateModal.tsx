@@ -85,6 +85,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
 
   const [output, setOutput] = useState<string>('');
   const [status, setStatus] = useState<'running' | 'success' | 'error'>('running');
+  const [stackStatuses, setStackStatuses] = useState<Record<number, 'pending' | 'running' | 'success' | 'error'>>({});
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [detectedIssue, setDetectedIssue] = useState<{ oldName: string; proposedName: string } | null>(null);
   const [applyingFix, setApplyingFix] = useState(false);
@@ -184,6 +185,9 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
     const targetStackId = targetStack.id;
     const targetStackName = targetStack.name;
 
+    const stackStartOffset = outputRef.current.length;
+    setStackStatuses((prev) => ({ ...prev, [index]: 'running' }));
+
     const initMsg = `[DockerPulse] Initiating action '${action}' on stack '${targetStackName}'${
       effectiveStacks.length > 1 ? ` (${index + 1}/${effectiveStacks.length})` : ''
     }...\n`;
@@ -207,23 +211,26 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
       },
       (err) => {
         const fullOutput = outputRef.current;
+        const stackOutput = fullOutput.slice(stackStartOffset);
         const isError = Boolean(
           err ||
-          fullOutput.includes('Command finished with error:') ||
-          fullOutput.includes('exit status ') ||
-          fullOutput.includes('name Does not match pattern')
+          stackOutput.includes('Command finished with error:') ||
+          stackOutput.includes('exit status ') ||
+          stackOutput.includes('name Does not match pattern') ||
+          stackOutput.includes('not found: stat')
         );
 
         if (isError) {
+          setStackStatuses((prev) => ({ ...prev, [index]: 'error' }));
           setStatus('error');
           setErrorMsg(err ? err.message : `Command finished with error on stack '${targetStackName}'`);
 
           if (
-            fullOutput.includes("name Does not match pattern '^[a-z0-9][a-z0-9_-]*$'") ||
-            fullOutput.includes('violates Docker Compose v2 naming rules')
+            stackOutput.includes("name Does not match pattern '^[a-z0-9][a-z0-9_-]*$'") ||
+            stackOutput.includes('violates Docker Compose v2 naming rules')
           ) {
-            const matchOld = fullOutput.match(/Top-level 'name:\s*([^']+)'/);
-            const matchProposed = fullOutput.match(/Suggested fix: 'name:\s*([^']+)'/);
+            const matchOld = stackOutput.match(/Top-level 'name:\s*([^']+)'/);
+            const matchProposed = stackOutput.match(/Suggested fix: 'name:\s*([^']+)'/);
             if (matchOld && matchProposed) {
               setDetectedIssue({ oldName: matchOld[1], proposedName: matchProposed[1] });
             } else {
@@ -247,6 +254,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             }
           }
         } else {
+          setStackStatuses((prev) => ({ ...prev, [index]: 'success' }));
           if (index + 1 < effectiveStacks.length) {
             outputRef.current += `\n[DockerPulse] Stack '${targetStackName}' completed successfully!\nProceeding to next stack...\n\n`;
             setOutput(outputRef.current);
@@ -389,27 +397,30 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
         {/* Batch Stacks Queue Progress Indicator */}
         {effectiveStacks.length > 1 && (
           <div className="flex items-center gap-1.5 overflow-x-auto px-5 py-2.5 bg-slate-950/40 border-b border-slate-800/80 text-xs font-mono shrink-0">
-            {effectiveStacks.map((s, idx) => (
-              <span
-                key={s.id}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] border transition-all ${
-                  idx === currentStackIndex
-                    ? 'bg-sky-500/20 text-sky-300 border-sky-500/40 font-semibold shadow-sm'
-                    : idx < currentStackIndex
-                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                    : 'bg-slate-800/60 text-slate-400 border-slate-700/40'
-                }`}
-              >
-                {idx < currentStackIndex && <Check className="w-3 h-3 text-emerald-400" />}
-                {idx === currentStackIndex && status === 'running' && (
-                  <RefreshCw className="w-3 h-3 text-sky-400 animate-spin" />
-                )}
-                {idx === currentStackIndex && status === 'error' && (
-                  <AlertCircle className="w-3 h-3 text-rose-400" />
-                )}
-                <span>{s.name}</span>
-              </span>
-            ))}
+            {effectiveStacks.map((s, idx) => {
+              const sStatus = stackStatuses[idx] || (idx < currentStackIndex ? 'success' : idx === currentStackIndex ? status : 'pending');
+              return (
+                <span
+                  key={s.id}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] border transition-all ${
+                    idx === currentStackIndex
+                      ? sStatus === 'error'
+                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/40 font-semibold shadow-sm'
+                        : 'bg-sky-500/20 text-sky-300 border-sky-500/40 font-semibold shadow-sm'
+                      : sStatus === 'success'
+                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                      : sStatus === 'error'
+                      ? 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                      : 'bg-slate-800/60 text-slate-400 border-slate-700/40'
+                  }`}
+                >
+                  {sStatus === 'success' && <Check className="w-3 h-3 text-emerald-400" />}
+                  {sStatus === 'running' && <RefreshCw className="w-3 h-3 text-sky-400 animate-spin" />}
+                  {sStatus === 'error' && <AlertCircle className="w-3 h-3 text-rose-400" />}
+                  <span>{s.name}</span>
+                </span>
+              );
+            })}
           </div>
         )}
 
