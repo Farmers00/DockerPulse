@@ -859,6 +859,10 @@ func (d *SocketDriver) getMounts(ctx context.Context) []hostMount {
 		})
 	}
 
+	if d.client == nil {
+		return d.mounts
+	}
+
 	// 2. Query Docker inspect for self-container
 	hostname, _ := os.Hostname()
 	candidates := []string{
@@ -964,7 +968,8 @@ func (d *SocketDriver) ToHostPath(ctx context.Context, p string) string {
 	if p == "" {
 		return ""
 	}
-	normP := normalizePath(p)
+	expanded := expandHomeDir(p)
+	normP := normalizePath(expanded)
 	mounts := d.getMounts(ctx)
 
 	// Check if normP already matches a host mount Source
@@ -1020,41 +1025,141 @@ func (d *SocketDriver) ToContainerPath(ctx context.Context, p string) string {
 // Stacks filesystem discovery and compose execution
 func (d *SocketDriver) DiscoverStacks(ctx context.Context, baseDir string) ([]DiscoveredStack, error) {
 	containerBase := d.ToContainerPath(ctx, baseDir)
-	entries, err := os.ReadDir(containerBase)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []DiscoveredStack{}, nil
-		}
-		return nil, err
-	}
 
 	var stacks []DiscoveredStack
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+	seenPaths := make(map[string]bool)
+	seenNames := make(map[string]bool)
+
+	addStack := func(name, hostDirPath, composeFile string, hasEnv bool, modTime time.Time) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			name = sanitizeComposeName(filepath.Base(hostDirPath))
 		}
+		normHostPath := normalizePath(hostDirPath)
+		nameLower := strings.ToLower(name)
+		if seenPaths[normHostPath] || seenNames[nameLower] {
+			return
+		}
+		seenPaths[normHostPath] = true
+		seenNames[nameLower] = true
 
-		containerDirPath := filepath.Join(containerBase, entry.Name())
-		composeFile := findComposeFile(containerDirPath)
-		if composeFile != "" {
-			info, _ := entry.Info()
-			hasEnv := false
-			if _, err := os.Stat(filepath.Join(containerDirPath, ".env")); err == nil {
-				hasEnv = true
+		stacks = append(stacks, DiscoveredStack{
+			Name:        name,
+			Path:        hostDirPath,
+			ComposeFile: filepath.Base(composeFile),
+			HasEnvFile:  hasEnv,
+			UpdatedAt:   modTime,
+		})
+	}
+
+	// 1. Check if containerBase itself has a compose file (depth 0)
+	if containerBase != "" {
+		if rootCompose := findComposeFile(containerBase); rootCompose != "" {
+			info, _ := os.Stat(rootCompose)
+			hasEnv := fileExists(filepath.Join(containerBase, ".env"))
+			hostDirPath := d.ToHostPath(ctx, containerBase)
+			stackName := getComposeProjectName(rootCompose, hostDirPath)
+			modTime := time.Now()
+			if info != nil {
+				modTime = info.ModTime()
 			}
-
-			hostDirPath := d.ToHostPath(ctx, containerDirPath)
-			stackName := getComposeProjectName(composeFile, hostDirPath)
-
-			stacks = append(stacks, DiscoveredStack{
-				Name:        stackName,
-				Path:        hostDirPath,
-				ComposeFile: filepath.Base(composeFile),
-				HasEnvFile:  hasEnv,
-				UpdatedAt:   info.ModTime(),
-			})
+			addStack(stackName, hostDirPath, rootCompose, hasEnv, modTime)
 		}
 	}
+
+	// 2. Scan subdirectories up to max depth 3
+	if containerBase != "" {
+		var walkDir func(currentDir string, depth int)
+		walkDir = func(currentDir string, depth int) {
+			if depth > 3 {
+				return
+			}
+			entries, err := os.ReadDir(currentDir)
+			if err != nil {
+				return
+			}
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				name := entry.Name()
+				if strings.HasPrefix(name, ".") || name == "node_modules" {
+					continue
+				}
+
+				subDirPath := filepath.Join(currentDir, name)
+				composeFile := findComposeFile(subDirPath)
+				if composeFile != "" {
+					info, _ := entry.Info()
+					hasEnv := fileExists(filepath.Join(subDirPath, ".env"))
+					hostDirPath := d.ToHostPath(ctx, subDirPath)
+					stackName := getComposeProjectName(composeFile, hostDirPath)
+					modTime := time.Now()
+					if info != nil {
+						modTime = info.ModTime()
+					}
+					addStack(stackName, hostDirPath, composeFile, hasEnv, modTime)
+					// Found a stack directory; do not descend deeper inside it
+					continue
+				}
+
+				// If no compose file at this directory, traverse deeper
+				walkDir(subDirPath, depth+1)
+			}
+		}
+
+		walkDir(containerBase, 1)
+	}
+
+	// 3. Discover active/stopped Compose stacks directly from Docker container labels
+	if d.client != nil {
+		if containers, err := d.ListContainers(ctx); err == nil {
+			for _, c := range containers {
+				if c.Stack == "" {
+					continue
+				}
+				stackName := c.Stack
+				if seenNames[strings.ToLower(stackName)] {
+					continue
+				}
+
+				hostDirPath := c.WorkingDir
+				if hostDirPath == "" && c.ConfigFile != "" {
+					hostDirPath = filepath.Dir(c.ConfigFile)
+				}
+				if hostDirPath == "" {
+					hostDirPath = d.ToHostPath(ctx, filepath.Join(baseDir, stackName))
+				}
+
+				containerDirPath := d.ToContainerPath(ctx, hostDirPath)
+				composeFile := ""
+				if containerDirPath != "" {
+					composeFile = findComposeFile(containerDirPath)
+				}
+				if composeFile == "" && c.ConfigFile != "" {
+					cConf := d.ToContainerPath(ctx, c.ConfigFile)
+					if fileExists(cConf) {
+						composeFile = cConf
+					}
+				}
+
+				compFileName := "docker-compose.yml"
+				if composeFile != "" {
+					compFileName = filepath.Base(composeFile)
+				} else if c.ConfigFile != "" {
+					compFileName = filepath.Base(c.ConfigFile)
+				}
+
+				hasEnv := false
+				if containerDirPath != "" && fileExists(filepath.Join(containerDirPath, ".env")) {
+					hasEnv = true
+				}
+
+				addStack(stackName, hostDirPath, compFileName, hasEnv, time.Now())
+			}
+		}
+	}
+
 	return stacks, nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -442,33 +443,71 @@ func (s *SSHDriver) PruneResources(ctx context.Context, pruneAll bool) (*PruneRe
 }
 
 func (s *SSHDriver) DiscoverStacks(ctx context.Context, baseDir string) ([]DiscoveredStack, error) {
-	// Look for compose files under baseDir
-	findCmd := fmt.Sprintf(`find %s -maxdepth 2 -type f \( -name "docker-compose.yml" -o -name "docker-compose.yaml" -o -name "compose.yml" -o -name "compose.yaml" \) 2>/dev/null`, baseDir)
-	out, err := s.runCommand(findCmd)
-	if err != nil {
-		return []DiscoveredStack{}, nil
-	}
-
-	lines := strings.Split(strings.TrimSpace(out), "\n")
+	seenPaths := make(map[string]bool)
+	seenNames := make(map[string]bool)
 	var stacks []DiscoveredStack
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		parts := strings.Split(trimmed, "/")
-		if len(parts) >= 2 {
-			dir := strings.Join(parts[:len(parts)-1], "/")
-			stackName := parts[len(parts)-2]
-			composeFile := parts[len(parts)-1]
 
-			stacks = append(stacks, DiscoveredStack{
-				Name:        stackName,
-				Path:        dir,
-				ComposeFile: composeFile,
-			})
+	addStack := func(name, path, composeFile string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			name = filepath.Base(path)
+		}
+		pathClean := filepath.ToSlash(path)
+		nameLower := strings.ToLower(name)
+		if seenPaths[pathClean] || seenNames[nameLower] {
+			return
+		}
+		seenPaths[pathClean] = true
+		seenNames[nameLower] = true
+		stacks = append(stacks, DiscoveredStack{
+			Name:        name,
+			Path:        pathClean,
+			ComposeFile: composeFile,
+			UpdatedAt:   time.Now(),
+		})
+	}
+
+	// 1. Look for compose files under baseDir up to 3 levels deep
+	findCmd := fmt.Sprintf(`find %s -maxdepth 3 -type f \( -name "docker-compose.yml" -o -name "docker-compose.yaml" -o -name "compose.yml" -o -name "compose.yaml" \) 2>/dev/null`, baseDir)
+	if out, err := s.runCommand(findCmd); err == nil {
+		lines := strings.Split(strings.TrimSpace(out), "\n")
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			parts := strings.Split(trimmed, "/")
+			if len(parts) >= 2 {
+				dir := strings.Join(parts[:len(parts)-1], "/")
+				stackName := parts[len(parts)-2]
+				composeFile := parts[len(parts)-1]
+				addStack(stackName, dir, composeFile)
+			}
 		}
 	}
+
+	// 2. Discover active/stopped Compose stacks directly from container labels
+	if containers, err := s.ListContainers(ctx); err == nil {
+		for _, c := range containers {
+			if c.Stack == "" {
+				continue
+			}
+			stackName := c.Stack
+			dir := c.WorkingDir
+			if dir == "" && c.ConfigFile != "" {
+				dir = filepath.Dir(c.ConfigFile)
+			}
+			if dir == "" {
+				dir = filepath.Join(baseDir, stackName)
+			}
+			compFile := "docker-compose.yml"
+			if c.ConfigFile != "" {
+				compFile = filepath.Base(c.ConfigFile)
+			}
+			addStack(stackName, dir, compFile)
+		}
+	}
+
 	return stacks, nil
 }
 

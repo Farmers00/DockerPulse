@@ -269,4 +269,55 @@ func TestBuildComposeEnv(t *testing.T) {
 	}
 }
 
+func TestDiscoverStacksRecursive(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// 1. Direct child stack: tdarr/docker-compose.yml
+	tdarrDir := filepath.Join(tmpDir, "tdarr")
+	_ = os.MkdirAll(tdarrDir, 0755)
+	_ = os.WriteFile(filepath.Join(tdarrDir, "docker-compose.yml"), []byte("services:\n  tdarr-server:\n    image: ghcr.io/haveagitgat/tdarr\n"), 0644)
+	_ = os.WriteFile(filepath.Join(tdarrDir, ".env"), []byte("FOO=BAR\n"), 0644)
+
+	// 2. Nested child stack: media/sonarr/compose.yaml
+	sonarrDir := filepath.Join(tmpDir, "media", "sonarr")
+	_ = os.MkdirAll(sonarrDir, 0755)
+	_ = os.WriteFile(filepath.Join(sonarrDir, "compose.yaml"), []byte("services:\n  sonarr:\n    image: linuxserver/sonarr\n"), 0644)
+
+	// 3. Hidden directory should be ignored: .git/docker-compose.yml
+	hiddenDir := filepath.Join(tmpDir, ".git")
+	_ = os.MkdirAll(hiddenDir, 0755)
+	_ = os.WriteFile(filepath.Join(hiddenDir, "docker-compose.yml"), []byte("services:\n  ignored:\n    image: nginx\n"), 0644)
+
+	d := &SocketDriver{}
+	ctx := context.Background()
+
+	discovered, err := d.DiscoverStacks(ctx, tmpDir)
+	if err != nil {
+		t.Fatalf("DiscoverStacks failed: %v", err)
+	}
+
+	names := make(map[string]bool)
+	hasEnvMap := make(map[string]bool)
+	for _, s := range discovered {
+		names[s.Name] = true
+		hasEnvMap[s.Name] = s.HasEnvFile
+	}
+
+	if !names["tdarr"] {
+		t.Errorf("expected 'tdarr' to be discovered in %s, got: %+v", tdarrDir, names)
+	}
+	if !hasEnvMap["tdarr"] {
+		t.Errorf("expected tdarr to have HasEnvFile=true")
+	}
+
+	if !names["sonarr"] {
+		t.Errorf("expected nested 'sonarr' to be discovered, got: %+v", names)
+	}
+
+	if names[".git"] {
+		t.Errorf("hidden directory .git should not have been discovered")
+	}
+}
+
+
 

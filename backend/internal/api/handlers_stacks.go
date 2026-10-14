@@ -69,11 +69,20 @@ func (s *Server) handleDiscoverStacks(c *gin.Context) {
 		_ = s.db.UpsertStack(stack)
 	}
 
-	// Purge any stale duplicate stacks for this host (e.g. leftover /root/docker stacks)
+	// Purge stale duplicate /root/docker stacks only if another stack with the same name and a real host path exists
 	existing, _ := s.db.ListStacks(hostID)
 	for _, st := range existing {
-		if strings.HasPrefix(st.Path, "/root/docker/") && discoveredNames[st.Name] {
-			_ = s.db.DeleteStack(st.ID)
+		if strings.HasPrefix(st.Path, "/root/docker/") {
+			hasRealHostPath := false
+			for _, other := range existing {
+				if other.ID != st.ID && other.Name == st.Name && !strings.HasPrefix(other.Path, "/root/docker/") {
+					hasRealHostPath = true
+					break
+				}
+			}
+			if hasRealHostPath {
+				_ = s.db.DeleteStack(st.ID)
+			}
 		}
 	}
 
