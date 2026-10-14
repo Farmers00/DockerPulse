@@ -330,7 +330,7 @@ func (db *DB) DeleteUser(id string) error {
 
 // Host operations
 func (db *DB) ListHosts() ([]Host, error) {
-	rows, err := db.conn.Query("SELECT id, name, driver, address, port, auth_token, ssh_user, base_dir, status, last_seen, created_at FROM hosts ORDER BY name ASC")
+	rows, err := db.conn.Query("SELECT id, name, driver, address, port, auth_token, ssh_user, base_dir, status, last_seen, created_at FROM hosts ORDER BY CASE WHEN driver = 'socket' THEN 0 ELSE 1 END, name ASC")
 	if err != nil {
 		return nil, err
 	}

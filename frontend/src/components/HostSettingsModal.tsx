@@ -131,9 +131,9 @@ export const HostSettingsModal: React.FC<HostSettingsModalProps> = ({
           {/* Server Diagnostics & Meta */}
           <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3.5 space-y-2 text-xs">
             <div className="flex items-center justify-between">
-              <span className="text-slate-500">Connection Driver</span>
-              <span className="font-mono font-semibold text-sky-400 uppercase">
-                {host.driver}
+              <span className="text-slate-500">Connection Role / Driver</span>
+              <span className="font-mono font-semibold text-sky-400">
+                {host.driver === 'socket' ? 'Server (Local Socket)' : host.driver === 'agent' ? 'Node (Agent)' : 'Node (SSH)'}
               </span>
             </div>
             <div className="flex items-center justify-between">

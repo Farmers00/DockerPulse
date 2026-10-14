@@ -40,6 +40,19 @@ import { NotificationsDrawer } from './components/NotificationsDrawer';
 import { SettingsView } from './components/Settings/SettingsView';
 import { APP_VERSION } from './version';
 
+export function getHostRoleLabel(driver: string): string {
+  switch (driver?.toLowerCase()) {
+    case 'socket':
+      return 'Server';
+    case 'agent':
+      return 'Node';
+    case 'ssh':
+      return 'SSH Node';
+    default:
+      return 'Node';
+  }
+}
+
 function matchesStack(c: ContainerInfo, s: Stack): boolean {
   if (!c || !s) return false;
 
@@ -489,7 +502,17 @@ export const App: React.FC = () => {
     }
   };
 
-  const hostList = Array.isArray(hosts) ? hosts : [];
+  const hostList = useMemo(() => {
+    const list = Array.isArray(hosts) ? [...hosts] : [];
+    return list.sort((a, b) => {
+      const aIsServer = a.driver === 'socket' ? 1 : 0;
+      const bIsServer = b.driver === 'socket' ? 1 : 0;
+      if (aIsServer !== bIsServer) {
+        return bIsServer - aIsServer;
+      }
+      return a.name.localeCompare(b.name);
+    });
+  }, [hosts]);
   const containerList = Array.isArray(containers) ? containers : [];
   const stackList = Array.isArray(stacks) ? stacks : [];
   const currentHost = hostList.find((h) => h.id === selectedHostId);
@@ -582,7 +605,7 @@ export const App: React.FC = () => {
                 ) : (
                   hostList.map((h) => (
                     <option key={h.id} value={h.id}>
-                      {h.name} ({h.driver.toUpperCase()} &bull; {h.status})
+                      {h.name} ({getHostRoleLabel(h.driver)} &bull; {h.status})
                     </option>
                   ))
                 )}
@@ -687,6 +710,8 @@ export const App: React.FC = () => {
               const isSelected = h.id === selectedHostId;
               const stats = fleetStats[h.id];
               const isOnline = h.status === 'online';
+              const roleLabel = getHostRoleLabel(h.driver);
+              const isServer = h.driver === 'socket';
 
               return (
                 <button
@@ -706,6 +731,15 @@ export const App: React.FC = () => {
                     }`}
                   />
                   <span className="font-semibold font-sans">{h.name}</span>
+                  <span
+                    className={`text-[9px] uppercase font-mono px-1.5 py-0.5 rounded font-bold tracking-wider shrink-0 ${
+                      isServer
+                        ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
+                        : 'bg-slate-800 text-slate-400 border border-slate-700/60'
+                    }`}
+                  >
+                    {roleLabel}
+                  </span>
 
                   <span className="text-slate-600">&bull;</span>
 
@@ -766,12 +800,21 @@ export const App: React.FC = () => {
               <div>
                 <h2 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
                   {currentHost.name}
+                  <span
+                    className={`text-[9px] uppercase font-mono px-1.5 py-0.5 rounded font-bold tracking-wider shrink-0 ${
+                      currentHost.driver === 'socket'
+                        ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
+                        : 'bg-slate-800 text-slate-400 border border-slate-700/60'
+                    }`}
+                  >
+                    {getHostRoleLabel(currentHost.driver)}
+                  </span>
                   <span className="text-xs font-mono font-normal text-slate-400">
                     ({currentHost.base_dir})
                   </span>
                 </h2>
                 <p className="text-[11px] text-slate-400 font-mono">
-                  Driver: {currentHost.driver.toUpperCase()} &bull; Last Seen:{' '}
+                  Role: {getHostRoleLabel(currentHost.driver)} &bull; Driver: {currentHost.driver.toUpperCase()} &bull; Last Seen:{' '}
                   {new Date(currentHost.last_seen).toLocaleTimeString()}
                 </p>
               </div>
