@@ -362,7 +362,7 @@ services:
       --server %s
       --token %s
       --host-id %s
-      --base-dir /root/docker
+      --base-dir ${HOME}/docker
 EOF
 
 echo "[DockerPulse] Pulling and starting DockerPulse agent container..."
@@ -406,7 +406,7 @@ func (s *Server) handleAgentComposeTemplate(c *gin.Context) {
       --server %s
       --token %s
       --host-id %s
-      --base-dir /root/docker
+      --base-dir ${HOME}/docker
 `, s.cfg.Image, wsURL, token, hostID)
 
 	c.Header("Content-Type", "text/yaml; charset=utf-8")

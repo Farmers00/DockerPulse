@@ -20,9 +20,9 @@ func (s *Server) handleListHosts(c *gin.Context) {
 
 	// Auto-seed Local Server if no hosts exist yet
 	if len(hosts) == 0 {
-		baseDir := "~/docker"
-		if _, err := os.Stat("/root/docker"); err == nil {
-			baseDir = "/root/docker"
+		baseDir := os.Getenv("HOST_BASE_DIR")
+		if baseDir == "" {
+			baseDir = "~/docker"
 		}
 		localHost := &database.Host{
 			Name:    "Local Server",

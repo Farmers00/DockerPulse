@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -44,6 +45,13 @@ func (s *Server) handleDiscoverStacks(c *gin.Context) {
 	// If host.BaseDir is set to a container path (e.g. /root/docker), translate to host path
 	if socketDriver, ok := d.(*driver.SocketDriver); ok {
 		hostBase := socketDriver.ToHostPath(ctx, host.BaseDir)
+		if hostBase == "/root/docker" || hostBase == "" {
+			if envHost := os.Getenv("HOST_BASE_DIR"); envHost != "" {
+				hostBase = envHost
+			} else {
+				hostBase = "~/docker"
+			}
+		}
 		if hostBase != "" && hostBase != host.BaseDir {
 			host.BaseDir = hostBase
 			_ = s.db.UpdateHost(host)
@@ -56,14 +64,23 @@ func (s *Server) handleDiscoverStacks(c *gin.Context) {
 		return
 	}
 
-	// Upsert discovered into database
+	// Upsert discovered into database, ensuring host paths are never /root/docker
 	discoveredNames := make(map[string]bool)
 	for _, disc := range discovered {
 		discoveredNames[disc.Name] = true
+		discPath := disc.Path
+		if strings.HasPrefix(discPath, "/root/docker") {
+			if host.BaseDir != "" && host.BaseDir != "/root/docker" {
+				discPath = strings.Replace(discPath, "/root/docker", host.BaseDir, 1)
+			} else {
+				discPath = strings.Replace(discPath, "/root/docker", "~/docker", 1)
+			}
+		}
+
 		stack := &database.Stack{
 			HostID: hostID,
 			Name:   disc.Name,
-			Path:   disc.Path,
+			Path:   discPath,
 			Status: "discovered",
 		}
 		_ = s.db.UpsertStack(stack)

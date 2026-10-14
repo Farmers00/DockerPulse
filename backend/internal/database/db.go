@@ -162,20 +162,35 @@ func (db *DB) migrate() error {
 		VALUES (1, 1, 360, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 	`)
 
+	// Migrate any legacy /root/docker host base_dirs to ~/docker
+	_, _ = db.conn.Exec(`
+		UPDATE hosts
+		SET base_dir = '~/docker'
+		WHERE base_dir = '/root/docker';
+	`)
+
+	// Migrate any legacy /root/docker stack paths to the host's actual base_dir
+	_, _ = db.conn.Exec(`
+		UPDATE stacks
+		SET path = (
+			SELECT CASE 
+				WHEN h.base_dir IS NOT NULL AND h.base_dir != '' AND h.base_dir != '/root/docker' 
+				THEN REPLACE(stacks.path, '/root/docker', h.base_dir)
+				ELSE REPLACE(stacks.path, '/root/docker', '~/docker')
+			END
+			FROM hosts h WHERE h.id = stacks.host_id
+		)
+		WHERE path LIKE '/root/docker/%';
+	`)
+
 	// Deduplicate any duplicate stacks on the same host (e.g. from previous container vs host path scans)
-	// Prefer host path (not starting with /root/docker/ when alternative exists) or newer updated_at
 	_, _ = db.conn.Exec(`
 		DELETE FROM stacks
 		WHERE id IN (
 			SELECT s1.id FROM stacks s1
 			JOIN stacks s2 ON s1.host_id = s2.host_id AND s1.name = s2.name AND s1.id != s2.id
-			WHERE (s1.path LIKE '/root/docker/%' AND s2.path NOT LIKE '/root/docker/%')
-			   OR (
-			        NOT (s1.path LIKE '/root/docker/%' AND s2.path NOT LIKE '/root/docker/%')
-			        AND NOT (s2.path LIKE '/root/docker/%' AND s1.path NOT LIKE '/root/docker/%')
-			        AND (s1.updated_at < s2.updated_at OR (s1.updated_at = s2.updated_at AND s1.id < s2.id))
-			   )
-		)
+			WHERE s1.updated_at < s2.updated_at OR (s1.updated_at = s2.updated_at AND s1.id < s2.id)
+		);
 	`)
 
 	return nil
