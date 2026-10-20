@@ -249,6 +249,10 @@ func (s *Server) handleCheckUpdates(c *gin.Context) {
 func (s *Server) handleAgentWS(c *gin.Context) {
 	token := c.Query("token")
 	hostID := c.Query("host_id")
+	baseDir := c.Query("base_dir")
+	if baseDir == "" {
+		baseDir = "~/docker"
+	}
 
 	if token != s.cfg.AgentSecret || hostID == "" {
 		c.AbortWithStatus(http.StatusUnauthorized)
@@ -268,13 +272,17 @@ func (s *Server) handleAgentWS(c *gin.Context) {
 			Name:     hostID,
 			Driver:   database.DriverAgent,
 			Address:  c.ClientIP(),
-			BaseDir:  "~/docker",
+			BaseDir:  baseDir,
 			Status:   "online",
 			LastSeen: time.Now().UTC(),
 		}
 		_ = s.db.CreateHost(newHost)
 	} else {
 		_ = s.db.UpdateHostStatus(hostID, "online")
+		if baseDir != "~/docker" && (h.BaseDir == "" || h.BaseDir == "~/docker") {
+			h.BaseDir = baseDir
+			_ = s.db.UpdateHost(h)
+		}
 	}
 
 	session := s.agentManager.Register(hostID, ws)

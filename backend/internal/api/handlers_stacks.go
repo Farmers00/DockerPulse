@@ -72,9 +72,12 @@ func (s *Server) handleDiscoverStacks(c *gin.Context) {
 		nameLower := strings.ToLower(strings.TrimSpace(disc.Name))
 		if nameLower != "" {
 			discoveredNames[nameLower] = true
+			discoveredNames[driver.SanitizeComposeName(nameLower)] = true
+			discoveredNames[strings.ReplaceAll(nameLower, "-", ".")] = true
 		}
 		if disc.Path != "" {
 			discoveredPaths[cleanStackPath(disc.Path)] = true
+			discoveredPaths[strings.ToLower(cleanStackPath(disc.Path))] = true
 		}
 
 		discPath := disc.Path
@@ -142,12 +145,30 @@ func (s *Server) handleDiscoverStacks(c *gin.Context) {
 		// 2. If stack was not found during discovery (neither in directory nor as an active/stopped container)
 		stNameLower := strings.ToLower(strings.TrimSpace(st.Name))
 		stCleanPath := cleanStackPath(st.Path)
-		if !discoveredNames[stNameLower] && !discoveredPaths[stCleanPath] {
+		stPathLower := strings.ToLower(stCleanPath)
+		isDiscovered := discoveredNames[stNameLower] ||
+			discoveredNames[driver.SanitizeComposeName(stNameLower)] ||
+			discoveredPaths[stCleanPath] ||
+			discoveredPaths[stPathLower]
+
+		if !isDiscovered {
 			// Verify if the stack files are actually gone
 			if _, _, err := d.ReadStackFiles(ctx, st.Path); err != nil {
 				// Stack folder is missing from host disk. Instead of deleting, mark as "missing" so user can restore it
 				st.Status = "missing"
 				_ = s.db.UpdateStackStatus(st.ID, "missing")
+			} else {
+				// Files exist on disk; stack is simply stopped/down
+				if st.Status == "missing" {
+					st.Status = "stopped"
+					_ = s.db.UpdateStackStatus(st.ID, "stopped")
+				}
+			}
+		} else {
+			// Stack was found on disk; clear any previous false "missing" flag
+			if st.Status == "missing" {
+				st.Status = "stopped"
+				_ = s.db.UpdateStackStatus(st.ID, "stopped")
 			}
 		}
 	}

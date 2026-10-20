@@ -1042,6 +1042,15 @@ func (d *SocketDriver) ToContainerPath(ctx context.Context, p string) string {
 // Stacks filesystem discovery and compose execution
 func (d *SocketDriver) DiscoverStacks(ctx context.Context, baseDir string) ([]DiscoveredStack, error) {
 	containerBase := d.ToContainerPath(ctx, baseDir)
+	if containerBase == "" || !dirExists(containerBase) {
+		fallbacks := []string{"/root/docker", "/docker"}
+		for _, fb := range fallbacks {
+			if dirExists(fb) {
+				containerBase = fb
+				break
+			}
+		}
+	}
 
 	var stacks []DiscoveredStack
 	seenPaths := make(map[string]bool)
@@ -1051,6 +1060,10 @@ func (d *SocketDriver) DiscoverStacks(ctx context.Context, baseDir string) ([]Di
 		name = strings.TrimSpace(name)
 		if name == "" {
 			name = sanitizeComposeName(filepath.Base(hostDirPath))
+		}
+		// If hostDirPath still has /root/docker prefix and baseDir is a host path, translate
+		if strings.HasPrefix(hostDirPath, "/root/docker") && baseDir != "" && baseDir != "/root/docker" {
+			hostDirPath = strings.Replace(hostDirPath, "/root/docker", baseDir, 1)
 		}
 		normHostPath := normalizePath(hostDirPath)
 		nameLower := strings.ToLower(name)
@@ -1205,12 +1218,24 @@ func (d *SocketDriver) findStackComposeFile(ctx context.Context, stackPath strin
 	}
 
 	// 5. Check mounts: does any mounted folder match the base directory of stackPath?
-	baseName := filepath.Base(stackPath)
+	cleanP := strings.TrimRight(stackPath, "/")
+	if strings.HasSuffix(cleanP, ".yml") || strings.HasSuffix(cleanP, ".yaml") {
+		cleanP = filepath.Dir(cleanP)
+	}
+	baseName := filepath.Base(cleanP)
 	if baseName != "" && baseName != "." && baseName != "/" {
 		for _, m := range d.getMounts(ctx) {
 			candidateDir := filepath.Join(m.Destination, baseName)
 			if cf := findComposeFile(candidateDir); cf != "" {
 				return candidateDir, filepath.Join(m.Source, baseName), cf
+			}
+		}
+
+		// Also check standard fallback directories inside container
+		for _, fb := range []string{"/root/docker", "/docker"} {
+			candidateDir := filepath.Join(fb, baseName)
+			if cf := findComposeFile(candidateDir); cf != "" {
+				return candidateDir, hostPath, cf
 			}
 		}
 	}
@@ -1701,6 +1726,11 @@ func fileExists(p string) bool {
 	return err == nil && !info.IsDir()
 }
 
+func dirExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
+}
+
 func expandHomeDir(path string) string {
 	if strings.HasPrefix(path, "~/") || path == "~" {
 		home, err := os.UserHomeDir()
@@ -1725,7 +1755,7 @@ var (
 	topLevelNameRegex     = regexp.MustCompile(`(?m)^name\s*:\s*(.+)$`)
 )
 
-func sanitizeComposeName(raw string) string {
+func SanitizeComposeName(raw string) string {
 	raw = strings.TrimSpace(raw)
 	raw = strings.Trim(raw, `"'`)
 	raw = strings.ToLower(raw)
@@ -1750,6 +1780,10 @@ func sanitizeComposeName(raw string) string {
 		return "stack"
 	}
 	return res
+}
+
+func sanitizeComposeName(raw string) string {
+	return SanitizeComposeName(raw)
 }
 
 func getComposeProjectName(composeFile string, hostPath string) string {

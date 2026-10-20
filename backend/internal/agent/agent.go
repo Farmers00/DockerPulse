@@ -63,6 +63,9 @@ func (a *Agent) connectAndListen(ctx context.Context) error {
 	q := u.Query()
 	q.Set("token", a.cfg.Token)
 	q.Set("host_id", a.cfg.HostID)
+	if a.cfg.BaseDir != "" {
+		q.Set("base_dir", a.cfg.BaseDir)
+	}
 	u.RawQuery = q.Encode()
 
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, u.String(), nil)
@@ -181,7 +184,7 @@ func (a *Agent) handleMessage(ctx context.Context, msg driver.AgentMessage) {
 		var p struct{ BaseDir string }
 		_ = json.Unmarshal(msg.Payload, &p)
 		base := p.BaseDir
-		if base == "" {
+		if base == "" || (base == "~/docker" && a.cfg.BaseDir != "" && a.cfg.BaseDir != "~/docker") {
 			base = a.cfg.BaseDir
 		}
 		stacks, err := a.driver.DiscoverStacks(ctx, base)
