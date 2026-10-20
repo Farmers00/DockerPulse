@@ -1401,17 +1401,6 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 				actionTitle = "update"
 			}
 			fmt.Fprintf(writer, "[DockerPulse] Detected self-%s of DockerPulse at %s\n", actionTitle, hostPath)
-			if action == "pull_up" {
-				fmt.Fprintln(writer, "[DockerPulse] Pulling latest DockerPulse image...")
-				pullArgs := append([]string{}, baseArgs...)
-				pullArgs = append(pullArgs, "pull")
-				if pullErr := d.runComposeCmd(ctx, containerPath, pullArgs, writer); pullErr != nil {
-					fmt.Fprintf(writer, "[DockerPulse] Warning: direct compose pull returned: %v. Helper will attempt pull.\n", pullErr)
-				} else {
-					fmt.Fprintln(writer, "[DockerPulse] Image pulled successfully.")
-				}
-			}
-			fmt.Fprintln(writer, "[DockerPulse] Spawning detached helper runner to safely restart container...")
 
 			selfRef, _ := os.Hostname()
 			if selfRef == "" {
@@ -1430,12 +1419,35 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 				helperImage = detail.Config.Image
 			}
 
+			if action == "pull_up" {
+				fmt.Fprintf(writer, "[DockerPulse] Pulling latest DockerPulse image (%s)...\n", helperImage)
+				pullCmd := exec.CommandContext(ctx, "docker", "pull", helperImage)
+				pullCmd.Stdout = writer
+				pullCmd.Stderr = writer
+				if pullErr := pullCmd.Run(); pullErr != nil {
+					fmt.Fprintf(writer, "[DockerPulse] Warning: direct pull returned: %v. Helper will attempt pull.\n", pullErr)
+				} else {
+					fmt.Fprintln(writer, "[DockerPulse] Image pulled successfully.")
+				}
+			}
+			fmt.Fprintln(writer, "[DockerPulse] Spawning detached helper runner to safely restart container...")
+
 			userEnv := parseEnvFile(envFile)
 
+			// Determine host paths so Docker Engine attaches to the real host path (/home/...) instead of container /root/
+			targetDir := containerPath
+			targetComposeFile := composeFile
+			targetEnvFile := envFile
+			if hostPath != "" {
+				targetDir = hostPath
+				targetComposeFile = filepath.Join(hostPath, filepath.Base(composeFile))
+				targetEnvFile = filepath.Join(hostPath, ".env")
+			}
+
 			var helperCmdParts []string
-			helperCmdParts = append(helperCmdParts, "docker", "compose", "-f", fmt.Sprintf("%q", filepath.ToSlash(composeFile)))
+			helperCmdParts = append(helperCmdParts, "docker", "compose", "-f", fmt.Sprintf("%q", filepath.ToSlash(targetComposeFile)))
 			if fileExists(envFile) {
-				helperCmdParts = append(helperCmdParts, "--env-file", fmt.Sprintf("%q", filepath.ToSlash(envFile)))
+				helperCmdParts = append(helperCmdParts, "--env-file", fmt.Sprintf("%q", filepath.ToSlash(targetEnvFile)))
 			}
 			if hostPath != "" {
 				helperCmdParts = append(helperCmdParts, "--project-directory", fmt.Sprintf("%q", filepath.ToSlash(hostPath)))
@@ -1480,7 +1492,7 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 				"--entrypoint", "sh",
 				"-v", "/var/run/docker.sock:/var/run/docker.sock",
 				"--volumes-from", selfRef,
-				"-w", containerPath,
+				"-w", targetDir,
 			}
 			if hostPath != "" && hostPath != containerPath {
 				runArgs = append(runArgs, "-v", fmt.Sprintf("%s:%s", hostPath, hostPath))
