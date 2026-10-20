@@ -212,12 +212,15 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
       (err) => {
         const fullOutput = outputRef.current;
         const stackOutput = fullOutput.slice(stackStartOffset);
+        const hasSuccessMarker = stackOutput.includes('Command completed successfully.');
         const isError = Boolean(
           err ||
-          stackOutput.includes('Command finished with error:') ||
-          stackOutput.includes('exit status ') ||
-          stackOutput.includes('name Does not match pattern') ||
-          stackOutput.includes('not found: stat')
+          (!hasSuccessMarker && (
+            stackOutput.includes('Command finished with error:') ||
+            stackOutput.includes('exit status ') ||
+            stackOutput.includes('name Does not match pattern') ||
+            stackOutput.includes('not found: stat')
+          ))
         );
 
         if (isError) {

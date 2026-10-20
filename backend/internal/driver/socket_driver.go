@@ -1385,11 +1385,7 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 
 	baseArgs := []string{"compose", "-f", composeFile}
 	if fileExists(envFile) {
-		if hostPath != "" {
-			baseArgs = append(baseArgs, "--env-file", filepath.Join(hostPath, ".env"))
-		} else {
-			baseArgs = append(baseArgs, "--env-file", envFile)
-		}
+		baseArgs = append(baseArgs, "--env-file", envFile)
 	}
 	if hostPath != "" {
 		baseArgs = append(baseArgs, "--project-directory", hostPath)
@@ -1422,11 +1418,6 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 				selfRef = "dockerpulse"
 			}
 
-			composeSubCmd := "up -d"
-			if action == "restart" {
-				composeSubCmd = "restart"
-			}
-
 			helperImage := "ghcr.io/farmers00/dockerpulse:latest"
 			var detail struct {
 				Config struct {
@@ -1449,9 +1440,17 @@ func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, act
 			if hostPath != "" {
 				helperCmdParts = append(helperCmdParts, "--project-directory", fmt.Sprintf("%q", filepath.ToSlash(hostPath)))
 			}
-			helperCmdParts = append(helperCmdParts, composeSubCmd)
 
-			composeExec := strings.Join(helperCmdParts, " ")
+			var composeExec string
+			if action == "pull_up" {
+				pullCmd := strings.Join(append(append([]string{}, helperCmdParts...), "pull"), " ")
+				upCmd := strings.Join(append(append([]string{}, helperCmdParts...), "up", "-d"), " ")
+				composeExec = pullCmd + " && " + upCmd
+			} else if action == "restart" {
+				composeExec = strings.Join(append(append([]string{}, helperCmdParts...), "restart"), " ")
+			} else {
+				composeExec = strings.Join(append(append([]string{}, helperCmdParts...), "up", "-d"), " ")
+			}
 
 			var scriptParts []string
 			scriptParts = append(scriptParts, "unset PORT DATA_DIR JWT_SECRET AGENT_SECRET HOST_BASE_DIR CONTAINER_BASE_DIR PROXY_AUTH_HEADER PROXY_EMAIL_HEADER UPDATE_INTERVAL_MINUTES")
