@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -64,10 +65,18 @@ func (s *Server) handleDiscoverStacks(c *gin.Context) {
 		return
 	}
 
-	// Upsert discovered into database, ensuring host paths are never /root/docker
+	// Build lookup sets for all discovered stacks
 	discoveredNames := make(map[string]bool)
+	discoveredPaths := make(map[string]bool)
 	for _, disc := range discovered {
-		discoveredNames[disc.Name] = true
+		nameLower := strings.ToLower(strings.TrimSpace(disc.Name))
+		if nameLower != "" {
+			discoveredNames[nameLower] = true
+		}
+		if disc.Path != "" {
+			discoveredPaths[cleanStackPath(disc.Path)] = true
+		}
+
 		discPath := disc.Path
 		if strings.HasPrefix(discPath, "/root/docker") {
 			if host.BaseDir != "" && host.BaseDir != "/root/docker" {
@@ -75,6 +84,7 @@ func (s *Server) handleDiscoverStacks(c *gin.Context) {
 			} else {
 				discPath = strings.Replace(discPath, "/root/docker", "~/docker", 1)
 			}
+			discoveredPaths[cleanStackPath(discPath)] = true
 		}
 
 		stack := &database.Stack{
@@ -86,18 +96,30 @@ func (s *Server) handleDiscoverStacks(c *gin.Context) {
 		_ = s.db.UpsertStack(stack)
 	}
 
-	// Purge stale duplicate /root/docker stacks only if another stack with the same name and a real host path exists
+	// Purge stale duplicate /root/docker stacks and deleted stacks that no longer exist on host
 	existing, _ := s.db.ListStacks(hostID)
 	for _, st := range existing {
+		// 1. Purge stale duplicate /root/docker stacks if another stack with the same name and a real host path exists
 		if strings.HasPrefix(st.Path, "/root/docker/") {
 			hasRealHostPath := false
 			for _, other := range existing {
-				if other.ID != st.ID && other.Name == st.Name && !strings.HasPrefix(other.Path, "/root/docker/") {
+				if other.ID != st.ID && strings.EqualFold(other.Name, st.Name) && !strings.HasPrefix(other.Path, "/root/docker/") {
 					hasRealHostPath = true
 					break
 				}
 			}
 			if hasRealHostPath {
+				_ = s.db.DeleteStack(st.ID)
+				continue
+			}
+		}
+
+		// 2. If stack was not found during discovery (neither in directory nor as an active/stopped container)
+		stNameLower := strings.ToLower(strings.TrimSpace(st.Name))
+		stCleanPath := cleanStackPath(st.Path)
+		if !discoveredNames[stNameLower] && !discoveredPaths[stCleanPath] {
+			// Verify if the stack files are actually gone
+			if _, _, err := d.ReadStackFiles(ctx, st.Path); err != nil {
 				_ = s.db.DeleteStack(st.ID)
 			}
 		}
@@ -105,6 +127,16 @@ func (s *Server) handleDiscoverStacks(c *gin.Context) {
 
 	stacks, _ := s.db.ListStacks(hostID)
 	c.JSON(http.StatusOK, stacks)
+}
+
+func cleanStackPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	p = strings.TrimSpace(p)
+	p = strings.ReplaceAll(p, "\\", "/")
+	p = filepath.Clean(p)
+	return strings.ReplaceAll(p, "\\", "/")
 }
 
 func (s *Server) handleDeleteStack(c *gin.Context) {
