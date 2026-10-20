@@ -541,7 +541,25 @@ func (db *DB) CreateRevision(r *StackRevision) error {
 		INSERT INTO stack_revisions (id, stack_id, revision_num, compose_content, env_content, created_by, note, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`, r.ID, r.StackID, r.RevisionNum, r.ComposeContent, r.EnvContent, r.CreatedBy, r.Note, r.CreatedAt)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Retention policy: Keep only the latest 2 revisions (current + 1 previous undo)
+	_, _ = db.conn.Exec(`
+		DELETE FROM stack_revisions
+		WHERE stack_id = ?
+		  AND id NOT IN (
+			SELECT id FROM (
+				SELECT id FROM stack_revisions
+				WHERE stack_id = ?
+				ORDER BY revision_num DESC
+				LIMIT 2
+			)
+		  )
+	`, r.StackID, r.StackID)
+
+	return nil
 }
 
 func (db *DB) ListRevisions(stackID string) ([]StackRevision, error) {

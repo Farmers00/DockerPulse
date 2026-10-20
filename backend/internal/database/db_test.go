@@ -231,3 +231,55 @@ func TestUserManagement(t *testing.T) {
 		t.Fatalf("expected 1 user, got %d", len(users))
 	}
 }
+
+func TestRevisionRetentionLimit(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := InitDB(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer db.Close()
+
+	host := &Host{
+		Name:    "Host 1",
+		Driver:  DriverSocket,
+		Address: "local",
+		BaseDir: "/docker",
+		Status:  "online",
+	}
+	_ = db.CreateHost(host)
+
+	stack := &Stack{
+		HostID: host.ID,
+		Name:   "app",
+		Path:   "/docker/app",
+		Status: "running",
+	}
+	_ = db.UpsertStack(stack)
+
+	// Create 4 revisions
+	for i := 1; i <= 4; i++ {
+		err := db.CreateRevision(&StackRevision{
+			StackID:        stack.ID,
+			ComposeContent: "services: test",
+			EnvContent:     "FOO=bar",
+			CreatedBy:      "user",
+			Note:           "rev",
+		})
+		if err != nil {
+			t.Fatalf("failed to create rev %d: %v", i, err)
+		}
+	}
+
+	// Verify only the latest 2 revisions remain
+	revs, err := db.ListRevisions(stack.ID)
+	if err != nil {
+		t.Fatalf("failed to list revisions: %v", err)
+	}
+	if len(revs) != 2 {
+		t.Fatalf("expected exactly 2 revisions retained, got %d", len(revs))
+	}
+	if revs[0].RevisionNum != 4 || revs[1].RevisionNum != 3 {
+		t.Fatalf("expected revisions 4 and 3, got %d and %d", revs[0].RevisionNum, revs[1].RevisionNum)
+	}
+}
