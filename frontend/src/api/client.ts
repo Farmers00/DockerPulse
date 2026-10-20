@@ -81,6 +81,15 @@ export const api = {
     }),
   deleteStack: (hostId: string, stackId: string) =>
     request<{ success: boolean }>(`/hosts/${hostId}/stacks/${stackId}`, { method: 'DELETE' }),
+  restoreStack: (
+    hostId: string,
+    stackId: string,
+    data: { path?: string; revision_id?: string; start?: boolean }
+  ) =>
+    request<{ success: boolean; stack: Stack }>(`/hosts/${hostId}/stacks/${stackId}/restore`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   listStackRevisions: (hostId: string, stackId: string) =>
     request<StackRevision[]>(`/hosts/${hostId}/stacks/${stackId}/revisions`),
 

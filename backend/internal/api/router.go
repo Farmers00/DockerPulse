@@ -127,6 +127,7 @@ func (s *Server) SetupRouter() *gin.Engine {
 		api.PUT("/hosts/:id/stacks/:sid/files", s.handleSaveStackFiles)
 		api.DELETE("/hosts/:id/stacks/:sid", s.handleDeleteStack)
 		api.POST("/hosts/:id/stacks/:sid/action", s.handleComposeAction)
+		api.POST("/hosts/:id/stacks/:sid/restore", s.handleRestoreStack)
 		api.GET("/hosts/:id/stacks/:sid/revisions", s.handleListRevisions)
 
 		// Networks

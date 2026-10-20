@@ -23,13 +23,16 @@ import {
   Cpu,
   Settings,
   MoreVertical,
-  Bell
+  Bell,
+  AlertTriangle,
+  RotateCcw
 } from 'lucide-react';
 import { api } from './api/client';
 import { Host, ContainerInfo, Stack, SystemInfo, User, InAppNotification } from './types';
 import { LiveLogsModal } from './components/LiveLogsModal';
 import { TerminalModal } from './components/TerminalModal';
 import { ComposeEditorModal } from './components/ComposeEditorModal';
+import { RestoreStackModal } from './components/RestoreStackModal';
 import { UpdateModal } from './components/UpdateModal';
 import { NetworksModal } from './components/NetworksModal';
 import { StorageModal } from './components/StorageModal';
@@ -152,6 +155,7 @@ export const App: React.FC = () => {
   const [logContainer, setLogContainer] = useState<ContainerInfo | null>(null);
   const [terminalContainer, setTerminalContainer] = useState<ContainerInfo | null>(null);
   const [editStack, setEditStack] = useState<Stack | null>(null);
+  const [restoreStack, setRestoreStack] = useState<Stack | null>(null);
   const [updateAction, setUpdateAction] = useState<{ stack?: Stack; stacks?: Stack[]; action: string } | null>(null);
   const [showNetworks, setShowNetworks] = useState(false);
   const [showStorage, setShowStorage] = useState(false);
@@ -386,7 +390,11 @@ export const App: React.FC = () => {
   };
 
   const handleDeleteStack = async (s: Stack) => {
-    if (!window.confirm(`Remove stack "${s.name}" from DockerPulse? (Files on disk will not be deleted)`)) {
+    const isMissing = s.status === 'missing';
+    const confirmMsg = isMissing
+      ? `Permanently remove stack "${s.name}" from DockerPulse? (Its directory on the host was deleted. This will erase its saved compose configuration and revision history).`
+      : `Remove stack "${s.name}" from DockerPulse? (Files on disk will not be deleted)`;
+    if (!window.confirm(confirmMsg)) {
       return;
     }
     try {
@@ -1136,6 +1144,7 @@ export const App: React.FC = () => {
               </div>
             ) : (
               stackList.map((s) => {
+                const isMissing = s.status === 'missing';
                 const stackContainers = containerList.filter((c) => matchesStack(c, s));
                 const runningCount = stackContainers.filter((c) => c && c.state === 'running').length;
                 const updateCount = stackContainers.filter((c) => isContainerUpdateAvailable(c, updates)).length;
@@ -1143,45 +1152,72 @@ export const App: React.FC = () => {
                 return (
                   <div
                     key={s.id}
-                    className="rounded-xl border border-slate-800/80 bg-slate-900/60 p-5 space-y-4 hover:border-slate-700/80 transition-all flex flex-col justify-between"
+                    className={`rounded-xl border p-5 space-y-4 transition-all flex flex-col justify-between ${
+                      isMissing
+                        ? 'border-amber-500/40 bg-amber-950/10 hover:border-amber-500/60'
+                        : 'border-slate-800/80 bg-slate-900/60 hover:border-slate-700/80'
+                    }`}
                   >
                     <div>
                       <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-2">
-                          <Folder className="w-4 h-4 text-sky-400" />
+                          <Folder className={`w-4 h-4 ${isMissing ? 'text-amber-400' : 'text-sky-400'}`} />
                           <h3 className="font-bold text-sm text-slate-100">{s.name}</h3>
                         </div>
                         <div className="flex items-center gap-1.5">
-                          {updateCount > 0 && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setUpdateAction({ stack: s, action: 'pull_up' });
-                              }}
-                              className="flex items-center gap-1 rounded bg-amber-500/15 hover:bg-amber-500/25 active:bg-amber-500/35 border border-amber-500/30 hover:border-amber-400/50 px-2 py-0.5 text-[10px] font-mono font-semibold text-amber-300 hover:text-amber-200 shadow-sm transition-all cursor-pointer"
-                              title={`Click to update this stack (${updateCount} container update${updateCount === 1 ? '' : 's'} available)`}
-                            >
-                              <ArrowUpCircle className="w-3 h-3 text-amber-400" />
-                              {updateCount} {updateCount === 1 ? 'Update' : 'Updates'}
-                            </button>
+                          {isMissing ? (
+                            <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30 flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3 text-amber-400" />
+                              Directory Missing
+                            </span>
+                          ) : (
+                            <>
+                              {updateCount > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setUpdateAction({ stack: s, action: 'pull_up' });
+                                  }}
+                                  className="flex items-center gap-1 rounded bg-amber-500/15 hover:bg-amber-500/25 active:bg-amber-500/35 border border-amber-500/30 hover:border-amber-400/50 px-2 py-0.5 text-[10px] font-mono font-semibold text-amber-300 hover:text-amber-200 shadow-sm transition-all cursor-pointer"
+                                  title={`Click to update this stack (${updateCount} container update${updateCount === 1 ? '' : 's'} available)`}
+                                >
+                                  <ArrowUpCircle className="w-3 h-3 text-amber-400" />
+                                  {updateCount} {updateCount === 1 ? 'Update' : 'Updates'}
+                                </button>
+                              )}
+                              <span
+                                className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold ${
+                                  runningCount > 0
+                                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                    : 'bg-slate-800 text-slate-400'
+                                }`}
+                              >
+                                {runningCount}/{stackContainers.length} Running
+                              </span>
+                            </>
                           )}
-                          <span
-                            className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold ${
-                              runningCount > 0
-                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                                : 'bg-slate-800 text-slate-400'
-                            }`}
-                          >
-                            {runningCount}/{stackContainers.length} Running
-                          </span>
                         </div>
                       </div>
-                      <p className="text-xs font-mono text-slate-400 break-all">{s.path}</p>
+                      <p className="text-xs font-mono text-slate-400 break-all flex items-center gap-1.5">
+                        {isMissing ? (
+                          <>
+                            <span className="line-through text-slate-500">{s.path}</span>
+                            <span className="text-amber-400/90 text-[10px] font-semibold">(deleted on host)</span>
+                          </>
+                        ) : (
+                          s.path
+                        )}
+                      </p>
                     </div>
 
-                    {/* Services preview */}
-                    {stackContainers.length > 0 && (
+                    {/* Services preview or Missing notice */}
+                    {isMissing ? (
+                      <div className="rounded-lg bg-amber-500/10 border border-amber-500/20 p-2.5 text-xs text-amber-200/90 flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                        <span>Directory was removed on host. Compose files and revisions are preserved in DockerPulse.</span>
+                      </div>
+                    ) : stackContainers.length > 0 && (
                       <div className="space-y-1.5">
                         <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
                           Services
@@ -1218,50 +1254,81 @@ export const App: React.FC = () => {
 
                     {/* Push-Button Actions */}
                     <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-slate-800/80">
-                      {/* Push-Button Update (pull && up -d) */}
-                      <button
-                        onClick={() => setUpdateAction({ stack: s, action: 'pull_up' })}
-                        className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-3 text-xs font-medium text-white shadow-md transition-all ${
-                          updateCount > 0
-                            ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-600/30 ring-1 ring-amber-400/50 font-semibold'
-                            : 'bg-sky-600 hover:bg-sky-500 shadow-sky-600/20'
-                        }`}
-                      >
-                        <ArrowUpCircle className="w-3.5 h-3.5" />
-                        {updateCount > 0 ? `Pull & Update (${updateCount})` : 'Pull & Up'}
-                      </button>
+                      {isMissing ? (
+                        <>
+                          <button
+                            onClick={() => setRestoreStack(s)}
+                            className="flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-3 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 shadow-md shadow-amber-600/20 transition-all cursor-pointer"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            Restore Stack
+                          </button>
 
-                      <button
-                        onClick={() => setEditStack(s)}
-                        className="flex items-center gap-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 py-1.5 px-3 text-xs font-medium text-slate-200 transition-colors"
-                      >
-                        <Edit className="w-3.5 h-3.5 text-sky-400" />
-                        Edit & Env
-                      </button>
+                          <button
+                            onClick={() => setEditStack(s)}
+                            className="flex items-center gap-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 py-1.5 px-3 text-xs font-medium text-slate-200 transition-colors"
+                            title="View preserved compose and env files"
+                          >
+                            <Edit className="w-3.5 h-3.5 text-sky-400" />
+                            Files
+                          </button>
 
-                      <button
-                        onClick={() => setUpdateAction({ stack: s, action: 'restart' })}
-                        className="flex items-center gap-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 p-2 text-xs font-medium text-slate-400 hover:text-slate-200 transition-colors"
-                        title="Restart Stack"
-                      >
-                        <RotateCw className="w-3.5 h-3.5" />
-                      </button>
+                          <button
+                            onClick={() => handleDeleteStack(s)}
+                            className="flex items-center gap-1 rounded-lg bg-slate-800 hover:bg-rose-500/20 border border-slate-700 hover:border-rose-500/30 p-2 text-xs font-medium text-slate-400 hover:text-rose-400 transition-colors"
+                            title="Permanently remove stack from DockerPulse"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          {/* Push-Button Update (pull && up -d) */}
+                          <button
+                            onClick={() => setUpdateAction({ stack: s, action: 'pull_up' })}
+                            className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-3 text-xs font-medium text-white shadow-md transition-all ${
+                              updateCount > 0
+                                ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-600/30 ring-1 ring-amber-400/50 font-semibold'
+                                : 'bg-sky-600 hover:bg-sky-500 shadow-sky-600/20'
+                            }`}
+                          >
+                            <ArrowUpCircle className="w-3.5 h-3.5" />
+                            {updateCount > 0 ? `Pull & Update (${updateCount})` : 'Pull & Up'}
+                          </button>
 
-                      <button
-                        onClick={() => setUpdateAction({ stack: s, action: 'down' })}
-                        className="flex items-center gap-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 p-2 text-xs font-medium text-slate-400 hover:text-amber-400 transition-colors"
-                        title="Stop Stack (Down)"
-                      >
-                        <Square className="w-3.5 h-3.5" />
-                      </button>
+                          <button
+                            onClick={() => setEditStack(s)}
+                            className="flex items-center gap-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 py-1.5 px-3 text-xs font-medium text-slate-200 transition-colors"
+                          >
+                            <Edit className="w-3.5 h-3.5 text-sky-400" />
+                            Edit & Env
+                          </button>
 
-                      <button
-                        onClick={() => handleDeleteStack(s)}
-                        className="flex items-center gap-1 rounded-lg bg-slate-800 hover:bg-rose-500/20 border border-slate-700 hover:border-rose-500/30 p-2 text-xs font-medium text-slate-400 hover:text-rose-400 transition-colors"
-                        title="Remove Stack from DockerPulse"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                          <button
+                            onClick={() => setUpdateAction({ stack: s, action: 'restart' })}
+                            className="flex items-center gap-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 p-2 text-xs font-medium text-slate-400 hover:text-slate-200 transition-colors"
+                            title="Restart Stack"
+                          >
+                            <RotateCw className="w-3.5 h-3.5" />
+                          </button>
+
+                          <button
+                            onClick={() => setUpdateAction({ stack: s, action: 'down' })}
+                            className="flex items-center gap-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 p-2 text-xs font-medium text-slate-400 hover:text-amber-400 transition-colors"
+                            title="Stop Stack (Down)"
+                          >
+                            <Square className="w-3.5 h-3.5" />
+                          </button>
+
+                          <button
+                            onClick={() => handleDeleteStack(s)}
+                            className="flex items-center gap-1 rounded-lg bg-slate-800 hover:bg-rose-500/20 border border-slate-700 hover:border-rose-500/30 p-2 text-xs font-medium text-slate-400 hover:text-rose-400 transition-colors"
+                            title="Remove Stack from DockerPulse"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 );
@@ -1299,6 +1366,22 @@ export const App: React.FC = () => {
           stackName={editStack.name}
           onClose={() => setEditStack(null)}
           onDeploy={(action) => setUpdateAction({ stack: editStack, action })}
+        />
+      )}
+
+      {restoreStack && (
+        <RestoreStackModal
+          hostId={selectedHostId}
+          hostName={currentHost?.name || 'Server'}
+          stack={restoreStack}
+          onClose={() => setRestoreStack(null)}
+          onRestored={(restoredStack, startNow) => {
+            setRestoreStack(null);
+            refreshHostData();
+            if (startNow) {
+              setUpdateAction({ stack: restoredStack, action: 'up' });
+            }
+          }}
         />
       )}
 

@@ -513,6 +513,16 @@ func (db *DB) DeleteStack(id string) error {
 	return err
 }
 
+func (db *DB) UpdateStackStatus(id string, status string) error {
+	_, err := db.conn.Exec("UPDATE stacks SET status = ?, updated_at = ? WHERE id = ?", status, time.Now().UTC(), id)
+	return err
+}
+
+func (db *DB) UpdateStackPathAndStatus(id string, path string, status string) error {
+	_, err := db.conn.Exec("UPDATE stacks SET path = ?, status = ?, updated_at = ? WHERE id = ?", path, status, time.Now().UTC(), id)
+	return err
+}
+
 // Revision operations
 func (db *DB) CreateRevision(r *StackRevision) error {
 	if r.ID == "" {
@@ -557,6 +567,22 @@ func (db *DB) ListRevisions(stackID string) ([]StackRevision, error) {
 		revs = append(revs, r)
 	}
 	return revs, nil
+}
+
+func (db *DB) GetRevision(id string) (*StackRevision, error) {
+	row := db.conn.QueryRow(`
+		SELECT id, stack_id, revision_num, compose_content, env_content, created_by, note, created_at
+		FROM stack_revisions WHERE id = ?
+	`, id)
+	var r StackRevision
+	var note sql.NullString
+	if err := row.Scan(&r.ID, &r.StackID, &r.RevisionNum, &r.ComposeContent, &r.EnvContent, &r.CreatedBy, &note, &r.CreatedAt); err != nil {
+		return nil, err
+	}
+	if note.Valid {
+		r.Note = note.String
+	}
+	return &r, nil
 }
 
 // Notification operations

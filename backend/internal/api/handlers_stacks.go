@@ -94,9 +94,34 @@ func (s *Server) handleDiscoverStacks(c *gin.Context) {
 			Status: "discovered",
 		}
 		_ = s.db.UpsertStack(stack)
+
+		// Snapshot compose and env files if readable to keep revisions up to date
+		if composeContent, envContent, err := d.ReadStackFiles(ctx, stack.Path); err == nil && composeContent != "" {
+			revs, _ := s.db.ListRevisions(stack.ID)
+			if len(revs) == 0 {
+				_ = s.db.CreateRevision(&database.StackRevision{
+					StackID:        stack.ID,
+					ComposeContent: composeContent,
+					EnvContent:     envContent,
+					CreatedBy:      "system",
+					Note:           "Initial scan snapshot",
+				})
+			} else {
+				latest := revs[0]
+				if latest.ComposeContent != composeContent || latest.EnvContent != envContent {
+					_ = s.db.CreateRevision(&database.StackRevision{
+						StackID:        stack.ID,
+						ComposeContent: composeContent,
+						EnvContent:     envContent,
+						CreatedBy:      "system",
+						Note:           "Auto-synced from host directory",
+					})
+				}
+			}
+		}
 	}
 
-	// Purge stale duplicate /root/docker stacks and deleted stacks that no longer exist on host
+	// Purge stale duplicate /root/docker stacks and flag deleted stacks that no longer exist on host
 	existing, _ := s.db.ListStacks(hostID)
 	for _, st := range existing {
 		// 1. Purge stale duplicate /root/docker stacks if another stack with the same name and a real host path exists
@@ -120,7 +145,9 @@ func (s *Server) handleDiscoverStacks(c *gin.Context) {
 		if !discoveredNames[stNameLower] && !discoveredPaths[stCleanPath] {
 			// Verify if the stack files are actually gone
 			if _, _, err := d.ReadStackFiles(ctx, st.Path); err != nil {
-				_ = s.db.DeleteStack(st.ID)
+				// Stack folder is missing from host disk. Instead of deleting, mark as "missing" so user can restore it
+				st.Status = "missing"
+				_ = s.db.UpdateStackStatus(st.ID, "missing")
 			}
 		}
 	}
@@ -176,6 +203,17 @@ func (s *Server) handleGetStackFiles(c *gin.Context) {
 
 	composeContent, envContent, err := d.ReadStackFiles(ctx, stack.Path)
 	if err != nil {
+		// Fallback to latest revision in database if files cannot be read from host (e.g. missing stack)
+		revs, revErr := s.db.ListRevisions(stack.ID)
+		if revErr == nil && len(revs) > 0 {
+			c.JSON(http.StatusOK, gin.H{
+				"compose": revs[0].ComposeContent,
+				"env":     revs[0].EnvContent,
+				"path":    stack.Path,
+				"cached":  true,
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -184,6 +222,90 @@ func (s *Server) handleGetStackFiles(c *gin.Context) {
 		"compose": composeContent,
 		"env":     envContent,
 		"path":    stack.Path,
+	})
+}
+
+func (s *Server) handleRestoreStack(c *gin.Context) {
+	hostID := c.Param("id")
+	stackID := c.Param("sid")
+
+	var req struct {
+		Path       string `json:"path"`
+		RevisionID string `json:"revision_id"`
+		Start      bool   `json:"start"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	host, err := s.db.GetHost(hostID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Host not found"})
+		return
+	}
+
+	stack, err := s.db.GetStack(stackID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Stack not found"})
+		return
+	}
+
+	targetPath := strings.TrimSpace(req.Path)
+	if targetPath == "" {
+		targetPath = stack.Path
+	}
+
+	// Fetch revision to restore
+	var rev *database.StackRevision
+	if req.RevisionID != "" {
+		rev, err = s.db.GetRevision(req.RevisionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Specified revision not found"})
+			return
+		}
+	} else {
+		revs, err := s.db.ListRevisions(stack.ID)
+		if err != nil || len(revs) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "No saved revisions available to restore this stack"})
+			return
+		}
+		rev = &revs[0]
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	d, err := s.GetDriver(ctx, host)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	}
+	defer d.Close()
+
+	// Write files back to target host directory
+	if err := d.WriteStackFiles(ctx, targetPath, rev.ComposeContent, rev.EnvContent); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to write stack files: %v", err)})
+		return
+	}
+
+	// Update stack path and status back to normal in DB
+	_ = s.db.UpdateStackPathAndStatus(stack.ID, targetPath, "stopped")
+	stack.Path = targetPath
+	stack.Status = "stopped"
+
+	// Create revision note for restore
+	_ = s.db.CreateRevision(&database.StackRevision{
+		StackID:        stack.ID,
+		ComposeContent: rev.ComposeContent,
+		EnvContent:     rev.EnvContent,
+		CreatedBy:      "restore",
+		Note:           fmt.Sprintf("Restored to %s from revision #%d", targetPath, rev.RevisionNum),
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"stack":   stack,
 	})
 }
 
