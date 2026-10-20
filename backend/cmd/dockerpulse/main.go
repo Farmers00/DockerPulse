@@ -33,7 +33,7 @@ func main() {
 	case "agent":
 		runAgent()
 	case "version":
-		fmt.Println("DockerPulse v0.9.00")
+		fmt.Println("DockerPulse v0.9.1")
 	default:
 		printUsage()
 		os.Exit(1)
