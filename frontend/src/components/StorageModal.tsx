@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { X, HardDrive, Trash2, CheckCircle, AlertTriangle } from 'lucide-react';
+import { X, HardDrive, Trash2, CheckCircle, AlertTriangle, ShieldCheck, Info } from 'lucide-react';
 import { api } from '../api/client';
 import { DiskUsageInfo } from '../types';
 
@@ -37,8 +37,8 @@ export const StorageModal: React.FC<StorageModalProps> = ({
 
   const handlePrune = async (all = false) => {
     const msg = all
-      ? 'Perform Deep Prune? This will delete ALL unused images, stopped containers, and unused networks.'
-      : 'Prune dangling images and stopped containers?';
+      ? 'Perform Deep Prune?\n\nThis will remove all images that are not actively running. Your container data, volumes, and compose files will NOT be deleted, but stopped stacks will need to re-download their images when started again.\n\nProceed?'
+      : 'Perform Safe Cleanup?\n\nThis will remove orphaned update remnants (<none> images). All active images, container data, and volumes will be preserved.\n\nProceed?';
     if (!confirm(msg)) return;
 
     try {
@@ -173,42 +173,85 @@ export const StorageModal: React.FC<StorageModalProps> = ({
                 </div>
               )}
 
-              {/* Action Buttons */}
-              <div className="pt-2 flex flex-col gap-3">
-                <div className="flex items-center justify-between p-3.5 rounded-lg border border-slate-800 bg-slate-950/40">
-                  <div>
-                    <h4 className="text-xs font-semibold text-slate-200">Safe Cleanup</h4>
-                    <p className="text-[11px] text-slate-400 mt-0.5">
-                      Prunes stopped containers, dangling (&lt;none&gt;) images, and unused networks.
-                    </p>
+              {/* Action Cards */}
+              <div className="pt-2 flex flex-col gap-3.5">
+                {/* Safe Cleanup Card */}
+                <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4 transition-all hover:border-slate-700/80">
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                    <div className="space-y-1.5 flex-1">
+                      <div className="flex items-center gap-2">
+                        <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <h4 className="text-sm font-semibold text-slate-100">Safe Cleanup</h4>
+                        <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                          Recommended &bull; Zero Risk
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-300 leading-relaxed">
+                        Removes orphaned, untagged image layers (<code className="text-sky-300 font-mono text-[11px]">&lt;none&gt;</code>) left behind after updating containers.
+                      </p>
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-1 text-[11px] text-slate-400">
+                        <span className="flex items-center gap-1">
+                          <strong className="text-slate-300 font-medium">Deletes:</strong> {usage.dangling_images} dangling image remnants
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <strong className="text-slate-300 font-medium">Preserves:</strong> All tagged images, active containers & volumes
+                        </span>
+                        <span className="text-emerald-400/90 font-medium">
+                          &bull; Nothing needs to be re-downloaded
+                        </span>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => handlePrune(false)}
+                      disabled={pruning}
+                      className="self-start sm:self-center flex items-center gap-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 py-2 px-3.5 text-xs font-medium text-white transition-all shadow-sm shrink-0"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      {pruning ? 'Pruning...' : 'Prune Safe'}
+                    </button>
                   </div>
-                  <button
-                    onClick={() => handlePrune(false)}
-                    disabled={pruning}
-                    className="flex items-center gap-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 py-1.5 px-3 text-xs font-medium text-white transition-colors"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    {pruning ? 'Pruning...' : 'Prune Safe'}
-                  </button>
                 </div>
 
-                <div className="flex items-center justify-between p-3.5 rounded-lg border border-amber-500/20 bg-amber-500/5">
-                  <div>
-                    <h4 className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
-                      <AlertTriangle className="w-3.5 h-3.5" /> Deep Prune (All Unused Images)
-                    </h4>
-                    <p className="text-[11px] text-slate-400 mt-0.5">
-                      Deletes all images not currently attached to running or stopped containers.
-                    </p>
+                {/* Deep Prune Card */}
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 transition-all hover:border-amber-500/40">
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                    <div className="space-y-1.5 flex-1">
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                        <h4 className="text-sm font-semibold text-amber-300">Deep Prune</h4>
+                        <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                          Maximum Space Reclaim
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-300 leading-relaxed">
+                        Removes <strong className="text-slate-200">all images</strong> not currently in use by an active running container.
+                      </p>
+                      <div className="flex flex-col gap-1 pt-1 text-[11px] text-slate-400">
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                          <span className="flex items-center gap-1">
+                            <strong className="text-slate-300 font-medium">Deletes:</strong> Inactive & old tagged images (up to {formatBytes(usage.images_size)})
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <strong className="text-slate-300 font-medium">Preserves:</strong> Volumes, persistent data & running stacks
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1 text-amber-400/90 font-medium mt-0.5">
+                          <Info className="w-3.5 h-3.5 shrink-0" />
+                          <span>Stopped stacks or templates will re-download their image next time they start.</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => handlePrune(true)}
+                      disabled={pruning}
+                      className="self-start sm:self-center flex items-center gap-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-50 py-2 px-3.5 text-xs font-medium text-white transition-all shadow-sm shrink-0"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      {pruning ? 'Pruning...' : 'Deep Prune'}
+                    </button>
                   </div>
-                  <button
-                    onClick={() => handlePrune(true)}
-                    disabled={pruning}
-                    className="flex items-center gap-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-50 py-1.5 px-3 text-xs font-medium text-white transition-colors"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    Deep Prune
-                  </button>
                 </div>
               </div>
             </>

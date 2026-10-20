@@ -824,7 +824,6 @@ func (d *SocketDriver) PruneResources(ctx context.Context, pruneAll bool) (*Prun
 	}
 
 	_ = d.client.Post(ctx, "/containers/prune", nil, nil)
-	_ = d.client.Post(ctx, "/volumes/prune", nil, nil)
 
 	return report, nil
 }
