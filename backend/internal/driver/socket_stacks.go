@@ -27,10 +27,12 @@ func (d *SocketDriver) getMounts(ctx context.Context) []hostMount {
 	d.mountsMu.Lock()
 	defer d.mountsMu.Unlock()
 
-	if d.mountsInit {
+	if d.mountsInit && len(d.mounts) > 0 {
 		return d.mounts
 	}
-	d.mountsInit = true
+
+	mountCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	// 1. Check environment variable override
 	if envHostBase := os.Getenv("HOST_BASE_DIR"); envHostBase != "" {
@@ -70,7 +72,7 @@ func (d *SocketDriver) getMounts(ctx context.Context) []hostMount {
 			continue
 		}
 		var resp inspectResp
-		if err := d.client.Get(ctx, "/containers/"+cid+"/json", &resp); err == nil && len(resp.Mounts) > 0 {
+		if err := d.client.Get(mountCtx, "/containers/"+cid+"/json", &resp); err == nil && len(resp.Mounts) > 0 {
 			for _, m := range resp.Mounts {
 				if m.Type == "bind" && !strings.Contains(m.Source, "docker.sock") && !strings.Contains(m.Destination, "docker.sock") {
 					normSrc := normalizePath(m.Source)
@@ -107,7 +109,7 @@ func (d *SocketDriver) getMounts(ctx context.Context) []hostMount {
 				Destination string `json:"Destination"`
 			} `json:"Mounts"`
 		}
-		if err := d.client.Get(ctx, "/containers/json?all=1", &containers); err == nil {
+		if err := d.client.Get(mountCtx, "/containers/json?all=1", &containers); err == nil {
 			for _, c := range containers {
 				isSelf := strings.Contains(strings.ToLower(c.Image), "dockerpulse")
 				if !isSelf {
@@ -146,6 +148,9 @@ func (d *SocketDriver) getMounts(ctx context.Context) []hostMount {
 		}
 	}
 
+	if len(d.mounts) > 0 {
+		d.mountsInit = true
+	}
 	d.ensureMountSymlinks()
 	return d.mounts
 }

@@ -286,14 +286,17 @@ func (d *AgentDriver) StreamLogs(ctx context.Context, containerID string, follow
 		case <-ctx.Done():
 			return ctx.Err()
 		case msg, ok := <-streamCh:
-			if !ok || msg.Done {
+			if !ok {
 				return nil
+			}
+			if len(msg.DataChunk) > 0 {
+				writer.Write(msg.DataChunk)
 			}
 			if msg.Error != "" {
 				return errors.New(msg.Error)
 			}
-			if len(msg.DataChunk) > 0 {
-				writer.Write(msg.DataChunk)
+			if msg.Done {
+				return nil
 			}
 		}
 	}
@@ -445,14 +448,17 @@ func (d *AgentDriver) ExecuteCompose(ctx context.Context, stackPath string, acti
 		case <-ctx.Done():
 			return ctx.Err()
 		case msg, ok := <-streamCh:
-			if !ok || msg.Done {
+			if !ok {
 				return nil
+			}
+			if len(msg.DataChunk) > 0 {
+				writer.Write(msg.DataChunk)
 			}
 			if msg.Error != "" {
 				return errors.New(msg.Error)
 			}
-			if len(msg.DataChunk) > 0 {
-				writer.Write(msg.DataChunk)
+			if msg.Done {
+				return nil
 			}
 		}
 	}

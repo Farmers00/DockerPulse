@@ -216,6 +216,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
         const isError = Boolean(
           err ||
           (!hasSuccessMarker && (
+            stackOutput.includes('[DockerPulse] Error:') ||
             stackOutput.includes('Command finished with error:') ||
             stackOutput.includes('exit status ') ||
             stackOutput.includes('name Does not match pattern') ||
