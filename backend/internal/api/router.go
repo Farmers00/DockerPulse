@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/dockpulse/dockmgr/internal/auth"
@@ -18,19 +19,21 @@ import (
 )
 
 type Server struct {
-	cfg          *config.Config
-	db           *database.DB
-	agentManager *driver.AgentManager
-	updater      *updater.UpdateChecker
-	dispatcher   *notifications.Dispatcher
-	scheduler    *notifications.Scheduler
-	upgrader     websocket.Upgrader
-	frontendFS   fs.FS
+	cfg           *config.Config
+	db            *database.DB
+	agentManager  *driver.AgentManager
+	updater       *updater.UpdateChecker
+	dispatcher    *notifications.Dispatcher
+	scheduler     *notifications.Scheduler
+	upgrader      websocket.Upgrader
+	frontendFS    fs.FS
+	socketMu      sync.Mutex
+	socketDrivers map[string]*driver.SocketDriver
 }
 
 func NewServer(cfg *config.Config, db *database.DB, frontendFS fs.FS) *Server {
 	dispatcher := notifications.NewDispatcher(db)
-	updateChecker := updater.NewUpdateChecker(db)
+	updateChecker := updater.NewUpdateChecker()
 
 	s := &Server{
 		cfg:          cfg,
@@ -43,13 +46,32 @@ func NewServer(cfg *config.Config, db *database.DB, frontendFS fs.FS) *Server {
 				return true // Homelab / multi-origin friendly
 			},
 		},
-		frontendFS: frontendFS,
+		frontendFS:    frontendFS,
+		socketDrivers: make(map[string]*driver.SocketDriver),
 	}
 
 	s.scheduler = notifications.NewScheduler(db, dispatcher, updateChecker, s.GetDriver)
 	s.scheduler.Start()
 
 	return s
+}
+
+func (s *Server) getOrCreateSocketDriver(address string) (*driver.SocketDriver, error) {
+	if address == "" {
+		address = "local"
+	}
+	s.socketMu.Lock()
+	defer s.socketMu.Unlock()
+
+	if drv, ok := s.socketDrivers[address]; ok {
+		return drv, nil
+	}
+	drv, err := driver.NewSocketDriver(address)
+	if err != nil {
+		return nil, err
+	}
+	s.socketDrivers[address] = drv
+	return drv, nil
 }
 
 func (s *Server) GetDriver(ctx context.Context, host *database.Host) (driver.HostDriver, error) {
@@ -59,9 +81,9 @@ func (s *Server) GetDriver(ctx context.Context, host *database.Host) (driver.Hos
 	case database.DriverSSH:
 		return driver.NewSSHDriver(host.Address, host.Port, host.SSHUser, host.SSHKey)
 	case database.DriverSocket:
-		return driver.NewSocketDriver(host.Address)
+		return s.getOrCreateSocketDriver(host.Address)
 	default:
-		return driver.NewSocketDriver("local")
+		return s.getOrCreateSocketDriver("local")
 	}
 }
 

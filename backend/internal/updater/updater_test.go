@@ -6,7 +6,7 @@ import (
 )
 
 func TestVariousImages(t *testing.T) {
-	u := NewUpdateChecker(nil)
+	u := NewUpdateChecker()
 	ctx := context.Background()
 
 	images := []string{

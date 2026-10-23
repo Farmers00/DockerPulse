@@ -12,18 +12,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dockpulse/dockmgr/internal/database"
 	"github.com/dockpulse/dockmgr/internal/driver"
 )
 
 type UpdateChecker struct {
-	db     *database.DB
 	client *http.Client
 }
 
-func NewUpdateChecker(db *database.DB) *UpdateChecker {
+func NewUpdateChecker() *UpdateChecker {
 	return &UpdateChecker{
-		db: db,
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 		},

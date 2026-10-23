@@ -88,27 +88,8 @@ func (db *DB) migrate() error {
 		created_at DATETIME NOT NULL
 	);
 
-	CREATE TABLE IF NOT EXISTS update_checks (
-		id TEXT PRIMARY KEY,
-		host_id TEXT NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
-		stack_id TEXT NOT NULL REFERENCES stacks(id) ON DELETE CASCADE,
-		service_name TEXT NOT NULL,
-		image_name TEXT NOT NULL,
-		current_digest TEXT NOT NULL,
-		remote_digest TEXT NOT NULL,
-		has_update BOOLEAN NOT NULL DEFAULT 0,
-		last_checked_at DATETIME NOT NULL
-	);
-
-	CREATE TABLE IF NOT EXISTS audit_logs (
-		id TEXT PRIMARY KEY,
-		user_id TEXT,
-		username TEXT,
-		action TEXT NOT NULL,
-		target TEXT,
-		details TEXT,
-		created_at DATETIME NOT NULL
-	);
+	DROP TABLE IF EXISTS update_checks;
+	DROP TABLE IF EXISTS audit_logs;
 
 	CREATE TABLE IF NOT EXISTS notifications (
 		id TEXT PRIMARY KEY,
@@ -615,7 +596,20 @@ func (db *DB) CreateNotification(n *Notification) error {
 		INSERT INTO notifications (id, title, message, type, host_id, read, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, n.ID, n.Title, n.Message, n.Type, n.HostID, n.Read, n.CreatedAt)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Retention policy: keep only the latest 200 notifications to prevent unbounded DB growth
+	_, _ = db.conn.Exec(`
+		DELETE FROM notifications
+		WHERE id NOT IN (
+			SELECT id FROM notifications
+			ORDER BY created_at DESC
+			LIMIT 200
+		)
+	`)
+	return nil
 }
 
 func (db *DB) ListNotifications(limit int) ([]Notification, error) {

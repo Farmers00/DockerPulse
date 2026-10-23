@@ -1,0 +1,1021 @@
+package driver
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
+	"time"
+)
+
+func normalizePath(p string) string {
+	if p == "" {
+		return ""
+	}
+	p = strings.TrimSpace(p)
+	p = strings.ReplaceAll(p, "\\", "/")
+	p = filepath.Clean(p)
+	return strings.ReplaceAll(p, "\\", "/")
+}
+
+func (d *SocketDriver) getMounts(ctx context.Context) []hostMount {
+	d.mountsMu.Lock()
+	defer d.mountsMu.Unlock()
+
+	if d.mountsInit {
+		return d.mounts
+	}
+	d.mountsInit = true
+
+	// 1. Check environment variable override
+	if envHostBase := os.Getenv("HOST_BASE_DIR"); envHostBase != "" {
+		envContainerBase := os.Getenv("CONTAINER_BASE_DIR")
+		if envContainerBase == "" {
+			envContainerBase = "/root/docker"
+		}
+		d.mounts = append(d.mounts, hostMount{
+			Source:      normalizePath(envHostBase),
+			Destination: normalizePath(envContainerBase),
+		})
+	}
+
+	if d.client == nil {
+		return d.mounts
+	}
+
+	// 2. Query Docker inspect for self-container
+	hostname, _ := os.Hostname()
+	candidates := []string{
+		hostname,
+		os.Getenv("HOSTNAME"),
+		"dockerpulse-agent",
+		"dockerpulse",
+	}
+
+	type inspectResp struct {
+		Mounts []struct {
+			Type        string `json:"Type"`
+			Source      string `json:"Source"`
+			Destination string `json:"Destination"`
+		} `json:"Mounts"`
+	}
+
+	for _, cid := range candidates {
+		if cid == "" {
+			continue
+		}
+		var resp inspectResp
+		if err := d.client.Get(ctx, "/containers/"+cid+"/json", &resp); err == nil && len(resp.Mounts) > 0 {
+			for _, m := range resp.Mounts {
+				if m.Type == "bind" && !strings.Contains(m.Source, "docker.sock") && !strings.Contains(m.Destination, "docker.sock") {
+					normSrc := normalizePath(m.Source)
+					normDst := normalizePath(m.Destination)
+					exists := false
+					for _, existing := range d.mounts {
+						if existing.Destination == normDst {
+							exists = true
+							break
+						}
+					}
+					if !exists {
+						d.mounts = append(d.mounts, hostMount{
+							Source:      normSrc,
+							Destination: normDst,
+						})
+					}
+				}
+			}
+			if len(d.mounts) > 0 {
+				break
+			}
+		}
+	}
+
+	// 3. Fallback: check /containers/json for dockerpulse containers
+	if len(d.mounts) == 0 {
+		var containers []struct {
+			Names  []string `json:"Names"`
+			Image  string   `json:"Image"`
+			Mounts []struct {
+				Type        string `json:"Type"`
+				Source      string `json:"Source"`
+				Destination string `json:"Destination"`
+			} `json:"Mounts"`
+		}
+		if err := d.client.Get(ctx, "/containers/json?all=1", &containers); err == nil {
+			for _, c := range containers {
+				isSelf := strings.Contains(strings.ToLower(c.Image), "dockerpulse")
+				if !isSelf {
+					for _, n := range c.Names {
+						if strings.Contains(strings.ToLower(n), "dockerpulse") {
+							isSelf = true
+							break
+						}
+					}
+				}
+				if isSelf && len(c.Mounts) > 0 {
+					for _, m := range c.Mounts {
+						if m.Type == "bind" && !strings.Contains(m.Source, "docker.sock") && !strings.Contains(m.Destination, "docker.sock") {
+							normSrc := normalizePath(m.Source)
+							normDst := normalizePath(m.Destination)
+							exists := false
+							for _, existing := range d.mounts {
+								if existing.Destination == normDst {
+									exists = true
+									break
+								}
+							}
+							if !exists {
+								d.mounts = append(d.mounts, hostMount{
+									Source:      normSrc,
+									Destination: normDst,
+								})
+							}
+						}
+					}
+					if len(d.mounts) > 0 {
+						break
+					}
+				}
+			}
+		}
+	}
+
+	d.ensureMountSymlinks()
+	return d.mounts
+}
+
+func (d *SocketDriver) ensureMountSymlinks() {
+	if runtime.GOOS == "windows" {
+		return
+	}
+	for _, m := range d.mounts {
+		if m.Source == "" || m.Destination == "" || m.Source == m.Destination {
+			continue
+		}
+		if _, err := os.Lstat(m.Source); err != nil {
+			parent := filepath.Dir(m.Source)
+			_ = os.MkdirAll(parent, 0755)
+			_ = os.Symlink(m.Destination, m.Source)
+		}
+	}
+}
+
+func (d *SocketDriver) ToHostPath(ctx context.Context, p string) string {
+	if p == "" {
+		return ""
+	}
+	expanded := expandHomeDir(p)
+	normP := normalizePath(expanded)
+	mounts := d.getMounts(ctx)
+
+	// Check if normP already matches a host mount Source
+	for _, m := range mounts {
+		if normP == m.Source || strings.HasPrefix(normP, m.Source+"/") {
+			return normP
+		}
+	}
+
+	// Check if normP matches a container mount Destination
+	for _, m := range mounts {
+		if normP == m.Destination {
+			return m.Source
+		}
+		if strings.HasPrefix(normP, m.Destination+"/") {
+			rel := strings.TrimPrefix(normP, m.Destination+"/")
+			return m.Source + "/" + rel
+		}
+	}
+
+	return normP
+}
+
+func (d *SocketDriver) ToContainerPath(ctx context.Context, p string) string {
+	if p == "" {
+		return ""
+	}
+	expanded := expandHomeDir(p)
+	normP := normalizePath(expanded)
+	mounts := d.getMounts(ctx)
+
+	// If normP already matches a container mount Destination, return it
+	for _, m := range mounts {
+		if normP == m.Destination || strings.HasPrefix(normP, m.Destination+"/") {
+			return normP
+		}
+	}
+
+	// If normP matches a host mount Source, convert to container Destination
+	for _, m := range mounts {
+		if normP == m.Source {
+			return m.Destination
+		}
+		if strings.HasPrefix(normP, m.Source+"/") {
+			rel := strings.TrimPrefix(normP, m.Source+"/")
+			return m.Destination + "/" + rel
+		}
+	}
+
+	return normP
+}
+
+// Stacks filesystem discovery and compose execution
+func (d *SocketDriver) DiscoverStacks(ctx context.Context, baseDir string) ([]DiscoveredStack, error) {
+	containerBase := d.ToContainerPath(ctx, baseDir)
+	if containerBase == "" || !dirExists(containerBase) {
+		fallbacks := []string{"/root/docker", "/docker"}
+		for _, fb := range fallbacks {
+			if dirExists(fb) {
+				containerBase = fb
+				break
+			}
+		}
+	}
+
+	var stacks []DiscoveredStack
+	seenPaths := make(map[string]bool)
+	seenNames := make(map[string]bool)
+
+	addStack := func(name, hostDirPath, composeFile string, hasEnv bool, modTime time.Time) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			name = sanitizeComposeName(filepath.Base(hostDirPath))
+		}
+		// If hostDirPath still has /root/docker prefix and baseDir is a host path, translate
+		if strings.HasPrefix(hostDirPath, "/root/docker") && baseDir != "" && baseDir != "/root/docker" {
+			hostDirPath = strings.Replace(hostDirPath, "/root/docker", baseDir, 1)
+		}
+		normHostPath := normalizePath(hostDirPath)
+		nameLower := strings.ToLower(name)
+		if seenPaths[normHostPath] || seenNames[nameLower] {
+			return
+		}
+		seenPaths[normHostPath] = true
+		seenNames[nameLower] = true
+
+		stacks = append(stacks, DiscoveredStack{
+			Name:        name,
+			Path:        hostDirPath,
+			ComposeFile: filepath.Base(composeFile),
+			HasEnvFile:  hasEnv,
+			UpdatedAt:   modTime,
+		})
+	}
+
+	// 1. Check if containerBase itself has a compose file (depth 0)
+	if containerBase != "" {
+		if rootCompose := findComposeFile(containerBase); rootCompose != "" {
+			info, _ := os.Stat(rootCompose)
+			hasEnv := fileExists(filepath.Join(containerBase, ".env"))
+			hostDirPath := d.ToHostPath(ctx, containerBase)
+			stackName := getComposeProjectName(rootCompose, hostDirPath)
+			modTime := time.Now()
+			if info != nil {
+				modTime = info.ModTime()
+			}
+			addStack(stackName, hostDirPath, rootCompose, hasEnv, modTime)
+		}
+	}
+
+	// 2. Scan subdirectories up to max depth 3
+	if containerBase != "" {
+		var walkDir func(currentDir string, depth int)
+		walkDir = func(currentDir string, depth int) {
+			if depth > 3 {
+				return
+			}
+			entries, err := os.ReadDir(currentDir)
+			if err != nil {
+				return
+			}
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				name := entry.Name()
+				if strings.HasPrefix(name, ".") || name == "node_modules" {
+					continue
+				}
+
+				subDirPath := filepath.Join(currentDir, name)
+				composeFile := findComposeFile(subDirPath)
+				if composeFile != "" {
+					info, _ := entry.Info()
+					hasEnv := fileExists(filepath.Join(subDirPath, ".env"))
+					hostDirPath := d.ToHostPath(ctx, subDirPath)
+					stackName := getComposeProjectName(composeFile, hostDirPath)
+					modTime := time.Now()
+					if info != nil {
+						modTime = info.ModTime()
+					}
+					addStack(stackName, hostDirPath, composeFile, hasEnv, modTime)
+					// Found a stack directory; do not descend deeper inside it
+					continue
+				}
+
+				// If no compose file at this directory, traverse deeper
+				walkDir(subDirPath, depth+1)
+			}
+		}
+
+		walkDir(containerBase, 1)
+	}
+
+	// 3. Discover active/stopped Compose stacks directly from Docker container labels
+	if d.client != nil {
+		if containers, err := d.ListContainers(ctx); err == nil {
+			for _, c := range containers {
+				if c.Stack == "" {
+					continue
+				}
+				stackName := c.Stack
+				if seenNames[strings.ToLower(stackName)] {
+					continue
+				}
+
+				hostDirPath := c.WorkingDir
+				if hostDirPath == "" && c.ConfigFile != "" {
+					hostDirPath = filepath.Dir(c.ConfigFile)
+				}
+				if hostDirPath == "" {
+					hostDirPath = d.ToHostPath(ctx, filepath.Join(baseDir, stackName))
+				}
+
+				containerDirPath := d.ToContainerPath(ctx, hostDirPath)
+				composeFile := ""
+				if containerDirPath != "" {
+					composeFile = findComposeFile(containerDirPath)
+				}
+				if composeFile == "" && c.ConfigFile != "" {
+					cConf := d.ToContainerPath(ctx, c.ConfigFile)
+					if fileExists(cConf) {
+						composeFile = cConf
+					}
+				}
+
+				compFileName := "docker-compose.yml"
+				if composeFile != "" {
+					compFileName = filepath.Base(composeFile)
+				} else if c.ConfigFile != "" {
+					compFileName = filepath.Base(c.ConfigFile)
+				}
+
+				hasEnv := false
+				if containerDirPath != "" && fileExists(filepath.Join(containerDirPath, ".env")) {
+					hasEnv = true
+				}
+
+				addStack(stackName, hostDirPath, compFileName, hasEnv, time.Now())
+			}
+		}
+	}
+
+	return stacks, nil
+}
+
+func (d *SocketDriver) findStackComposeFile(ctx context.Context, stackPath string) (containerPath, hostPath, composeFile string) {
+	containerPath = d.ToContainerPath(ctx, stackPath)
+	hostPath = d.ToHostPath(ctx, stackPath)
+
+	// 1. Is containerPath directly a compose file?
+	if fileExists(containerPath) {
+		return filepath.Dir(containerPath), filepath.Dir(hostPath), containerPath
+	}
+
+	// 2. Is stackPath directly a compose file on disk?
+	if fileExists(stackPath) {
+		return filepath.Dir(stackPath), filepath.Dir(stackPath), stackPath
+	}
+
+	// 3. Does containerPath contain a compose file?
+	if cf := findComposeFile(containerPath); cf != "" {
+		return containerPath, hostPath, cf
+	}
+
+	// 4. Does stackPath contain a compose file?
+	if cf := findComposeFile(stackPath); cf != "" {
+		return stackPath, hostPath, cf
+	}
+
+	// 5. Check mounts: does any mounted folder match the base directory of stackPath?
+	cleanP := strings.TrimRight(stackPath, "/")
+	if strings.HasSuffix(cleanP, ".yml") || strings.HasSuffix(cleanP, ".yaml") {
+		cleanP = filepath.Dir(cleanP)
+	}
+	baseName := filepath.Base(cleanP)
+	if baseName != "" && baseName != "." && baseName != "/" {
+		for _, m := range d.getMounts(ctx) {
+			candidateDir := filepath.Join(m.Destination, baseName)
+			if cf := findComposeFile(candidateDir); cf != "" {
+				return candidateDir, filepath.Join(m.Source, baseName), cf
+			}
+		}
+
+		// Also check standard fallback directories inside container
+		for _, fb := range []string{"/root/docker", "/docker"} {
+			candidateDir := filepath.Join(fb, baseName)
+			if cf := findComposeFile(candidateDir); cf != "" {
+				return candidateDir, hostPath, cf
+			}
+		}
+	}
+
+	// 6. Query running/stopped containers for Compose labels matching this stack or container name
+	if d.client != nil {
+		var containers []rawContainer
+		if err := d.client.Get(ctx, "/containers/json?all=1", &containers); err == nil {
+			for _, c := range containers {
+				proj := c.Labels["com.docker.compose.project"]
+				matched := false
+				if proj != "" && (strings.EqualFold(proj, baseName) || strings.EqualFold(proj, stackPath)) {
+					matched = true
+				} else {
+					for _, name := range c.Names {
+						trimmed := strings.TrimPrefix(name, "/")
+						if strings.EqualFold(trimmed, baseName) || strings.EqualFold(trimmed, stackPath) {
+							matched = true
+							break
+						}
+					}
+				}
+
+				if matched {
+					cfg := c.Labels["com.docker.compose.project.config_files"]
+					wdir := c.Labels["com.docker.compose.project.working_dir"]
+					if wdir != "" && (hostPath == "" || hostPath == stackPath) {
+						hostPath = wdir
+					}
+					if cfg != "" {
+						for _, p := range strings.Split(cfg, ",") {
+							p = strings.TrimSpace(p)
+							cP := d.ToContainerPath(ctx, p)
+							if fileExists(cP) {
+								return filepath.Dir(cP), filepath.Dir(p), cP
+							}
+							if fileExists(p) {
+								return filepath.Dir(p), filepath.Dir(p), p
+							}
+						}
+					}
+					if wdir != "" {
+						cWdir := d.ToContainerPath(ctx, wdir)
+						if cf := findComposeFile(cWdir); cf != "" {
+							return cWdir, wdir, cf
+						}
+						if cf := findComposeFile(wdir); cf != "" {
+							return wdir, wdir, cf
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return containerPath, hostPath, ""
+}
+
+func (d *SocketDriver) ReadStackFiles(ctx context.Context, stackPath string) (string, string, error) {
+	containerPath, _, composeFile := d.findStackComposeFile(ctx, stackPath)
+	if composeFile == "" {
+		return "", "", fmt.Errorf("no compose file found in %s", stackPath)
+	}
+
+	composeBytes, err := os.ReadFile(composeFile)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to read compose file: %w", err)
+	}
+
+	envBytes, _ := os.ReadFile(filepath.Join(containerPath, ".env"))
+	return string(composeBytes), string(envBytes), nil
+}
+
+func (d *SocketDriver) WriteStackFiles(ctx context.Context, stackPath string, composeContent string, envContent string) error {
+	containerPath, _, composeFile := d.findStackComposeFile(ctx, stackPath)
+	if composeFile == "" {
+		containerPath = d.ToContainerPath(ctx, stackPath)
+		composeFile = filepath.Join(containerPath, "docker-compose.yml")
+	}
+
+	if err := os.MkdirAll(containerPath, 0755); err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(composeFile, []byte(composeContent), 0644); err != nil {
+		return fmt.Errorf("failed to write compose file: %w", err)
+	}
+
+	if envContent != "" || fileExists(filepath.Join(containerPath, ".env")) {
+		if err := os.WriteFile(filepath.Join(containerPath, ".env"), []byte(envContent), 0644); err != nil {
+			return fmt.Errorf("failed to write .env file: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (d *SocketDriver) isSelfUpdate(ctx context.Context, stackPath, containerPath, composeFile string) bool {
+	lowerStack := strings.ToLower(stackPath)
+	lowerContainer := strings.ToLower(containerPath)
+	if strings.Contains(lowerStack, "dockerpulse") || strings.Contains(lowerContainer, "dockerpulse") {
+		return true
+	}
+	if composeFile != "" {
+		if content, err := os.ReadFile(composeFile); err == nil {
+			lower := strings.ToLower(string(content))
+			if strings.Contains(lower, "dockerpulse") || strings.Contains(lower, "farmers00/dockerpulse") {
+				return true
+			}
+		}
+	}
+	hostname, _ := os.Hostname()
+	candidates := []string{hostname, "dockerpulse", "dockerpulse-agent"}
+	if d.client != nil {
+		for _, cid := range candidates {
+			if cid == "" {
+				continue
+			}
+			var detail struct {
+				Config struct {
+					Labels map[string]string `json:"Labels"`
+				} `json:"Config"`
+			}
+			if err := d.client.Get(ctx, "/containers/"+cid+"/json", &detail); err == nil {
+				proj := detail.Config.Labels["com.docker.compose.project"]
+				if proj != "" {
+					base := filepath.Base(stackPath)
+					if strings.EqualFold(proj, base) || strings.EqualFold(proj, stackPath) {
+						return true
+					}
+				}
+				break
+			}
+		}
+	}
+	return false
+}
+
+func (d *SocketDriver) ExecuteCompose(ctx context.Context, stackPath string, action string, writer io.Writer) error {
+	containerPath, hostPath, composeFile := d.findStackComposeFile(ctx, stackPath)
+	if composeFile == "" {
+		err := fmt.Errorf("no compose file found for stack '%s' (checked container path: %s, host path: %s)", filepath.Base(stackPath), containerPath, hostPath)
+		fmt.Fprintf(writer, "[DockerPulse] Error: %v\n", err)
+		return err
+	}
+
+	envFile := filepath.Join(containerPath, ".env")
+
+	// Detect top-level 'name:' issues and notify user, without automatically modifying user files
+	if hasIssue, oldName, proposedName := detectComposeNameIssue(composeFile); hasIssue {
+		fmt.Fprintf(writer, "[DockerPulse] WARNING: Top-level 'name: %s' in %s violates Docker Compose v2 naming rules (pattern '^[a-z0-9][a-z0-9_-]*$').\n", oldName, filepath.Base(composeFile))
+		fmt.Fprintf(writer, "[DockerPulse] Suggested fix: 'name: %s'. You can apply this fix or edit the file in DockerPulse.\n", proposedName)
+	}
+
+	// Ensure hostPath is accessible inside the container via symlink to containerPath
+	if runtime.GOOS != "windows" && hostPath != "" && containerPath != "" && hostPath != containerPath {
+		if _, err := os.Lstat(hostPath); err != nil {
+			parent := filepath.Dir(hostPath)
+			_ = os.MkdirAll(parent, 0755)
+			_ = os.Symlink(containerPath, hostPath)
+		}
+	}
+
+	// If compose file references env_file but no .env file exists on disk, create an empty one to prevent compose exit error
+	if !fileExists(envFile) {
+		if composeBytes, err := os.ReadFile(composeFile); err == nil {
+			if strings.Contains(string(composeBytes), "env_file") {
+				_ = os.WriteFile(envFile, []byte(""), 0644)
+			}
+		}
+	}
+
+	baseArgs := []string{"compose", "-f", composeFile}
+	if fileExists(envFile) {
+		baseArgs = append(baseArgs, "--env-file", envFile)
+	}
+	if hostPath != "" {
+		baseArgs = append(baseArgs, "--project-directory", hostPath)
+	}
+
+	isSelf := d.isSelfUpdate(ctx, stackPath, containerPath, composeFile)
+
+	switch action {
+	case "up", "restart", "pull_up":
+		if isSelf {
+			actionTitle := action
+			if action == "pull_up" {
+				actionTitle = "update"
+			}
+			fmt.Fprintf(writer, "[DockerPulse] Detected self-%s of DockerPulse at %s\n", actionTitle, hostPath)
+
+			selfRef, _ := os.Hostname()
+			if selfRef == "" {
+				selfRef = "dockerpulse"
+			}
+
+			helperImage := "ghcr.io/farmers00/dockerpulse:latest"
+			var detail struct {
+				Config struct {
+					Image string `json:"Image"`
+				} `json:"Config"`
+			}
+			if err := d.client.Get(ctx, "/containers/"+selfRef+"/json", &detail); err == nil && detail.Config.Image != "" {
+				helperImage = detail.Config.Image
+			} else if err := d.client.Get(ctx, "/containers/dockerpulse/json", &detail); err == nil && detail.Config.Image != "" {
+				helperImage = detail.Config.Image
+			}
+
+			if action == "pull_up" {
+				fmt.Fprintf(writer, "[DockerPulse] Pulling latest DockerPulse image (%s)...\n", helperImage)
+				pullCmd := exec.CommandContext(ctx, "docker", "pull", helperImage)
+				pullCmd.Stdout = writer
+				pullCmd.Stderr = writer
+				if pullErr := pullCmd.Run(); pullErr != nil {
+					fmt.Fprintf(writer, "[DockerPulse] Warning: direct pull returned: %v. Helper will attempt pull.\n", pullErr)
+				} else {
+					fmt.Fprintln(writer, "[DockerPulse] Image pulled successfully.")
+				}
+			}
+			fmt.Fprintln(writer, "[DockerPulse] Spawning detached helper runner to safely restart container...")
+
+			userEnv := parseEnvFile(envFile)
+
+			// Determine host paths so Docker Engine attaches to the real host path (/home/...) instead of container /root/
+			targetDir := containerPath
+			targetComposeFile := composeFile
+			targetEnvFile := envFile
+			if hostPath != "" {
+				targetDir = hostPath
+				targetComposeFile = filepath.Join(hostPath, filepath.Base(composeFile))
+				targetEnvFile = filepath.Join(hostPath, ".env")
+			}
+
+			var helperCmdParts []string
+			helperCmdParts = append(helperCmdParts, "docker", "compose", "-f", fmt.Sprintf("%q", filepath.ToSlash(targetComposeFile)))
+			if fileExists(envFile) {
+				helperCmdParts = append(helperCmdParts, "--env-file", fmt.Sprintf("%q", filepath.ToSlash(targetEnvFile)))
+			}
+			if hostPath != "" {
+				helperCmdParts = append(helperCmdParts, "--project-directory", fmt.Sprintf("%q", filepath.ToSlash(hostPath)))
+			}
+
+			var composeExec string
+			if action == "pull_up" {
+				pullCmd := strings.Join(append(append([]string{}, helperCmdParts...), "pull"), " ")
+				upCmd := strings.Join(append(append([]string{}, helperCmdParts...), "up", "-d"), " ")
+				composeExec = pullCmd + " && " + upCmd
+			} else if action == "restart" {
+				composeExec = strings.Join(append(append([]string{}, helperCmdParts...), "restart"), " ")
+			} else {
+				composeExec = strings.Join(append(append([]string{}, helperCmdParts...), "up", "-d"), " ")
+			}
+
+			var scriptParts []string
+			scriptParts = append(scriptParts, "unset PORT DATA_DIR JWT_SECRET AGENT_SECRET HOST_BASE_DIR CONTAINER_BASE_DIR PROXY_AUTH_HEADER PROXY_EMAIL_HEADER UPDATE_INTERVAL_MINUTES")
+			for k, v := range userEnv {
+				scriptParts = append(scriptParts, fmt.Sprintf("export %s=%s", k, shellQuote(v)))
+			}
+			scriptParts = append(scriptParts, "sleep 2")
+			scriptParts = append(scriptParts, composeExec)
+
+			cmdScript := strings.Join(scriptParts, " && ")
+			fmt.Fprintf(writer, "[DockerPulse] Helper command: %s\n", composeExec)
+			if len(userEnv) > 0 {
+				var exportedKeys []string
+				for k := range userEnv {
+					exportedKeys = append(exportedKeys, k)
+				}
+				fmt.Fprintf(writer, "[DockerPulse] Exported environment from .env: %s\n", strings.Join(exportedKeys, ", "))
+			}
+
+			// Ensure any previous helper container with this name is removed first
+			_ = exec.Command("docker", "rm", "-f", "dockerpulse-updater-helper").Run()
+
+			runArgs := []string{
+				"run", "--rm", "-d",
+				"--name", "dockerpulse-updater-helper",
+				"--label", "com.dockerpulse.helper=true",
+				"--entrypoint", "sh",
+				"-v", "/var/run/docker.sock:/var/run/docker.sock",
+				"--volumes-from", selfRef,
+				"-w", targetDir,
+			}
+			if hostPath != "" && hostPath != containerPath {
+				runArgs = append(runArgs, "-v", fmt.Sprintf("%s:%s", hostPath, hostPath))
+			}
+			if _, hasPort := userEnv["PORT"]; !hasPort {
+				runArgs = append(runArgs, "-e", "PORT=")
+			}
+			for k, v := range userEnv {
+				runArgs = append(runArgs, "-e", fmt.Sprintf("%s=%s", k, v))
+			}
+			runArgs = append(runArgs, helperImage, "-c", cmdScript)
+
+			runnerCmd := exec.Command("docker", runArgs...)
+
+			out, err := runnerCmd.CombinedOutput()
+			if err != nil {
+				_ = exec.Command("docker", "rm", "-f", "dockerpulse-updater-helper").Run()
+				// Fallback to try dockerpulse then dockerpulse-agent for --volumes-from
+				fallbacks := []string{"dockerpulse", "dockerpulse-agent"}
+				for _, fb := range fallbacks {
+					if selfRef != fb {
+						runArgsFallback := make([]string, len(runArgs))
+						copy(runArgsFallback, runArgs)
+						for i, arg := range runArgsFallback {
+							if arg == "--volumes-from" && i+1 < len(runArgsFallback) {
+								runArgsFallback[i+1] = fb
+								break
+							}
+						}
+						runnerCmdFallback := exec.Command("docker", runArgsFallback...)
+						if outFb, errFb := runnerCmdFallback.CombinedOutput(); errFb == nil {
+							out = outFb
+							err = nil
+							break
+						} else {
+							_ = exec.Command("docker", "rm", "-f", "dockerpulse-updater-helper").Run()
+						}
+					}
+				}
+			}
+
+			if err == nil {
+				cid := strings.TrimSpace(string(out))
+				if len(cid) > 12 {
+					cid = cid[:12]
+				}
+				fmt.Fprintf(writer, "[DockerPulse] Detached runner container launched (ID: %s).\n", cid)
+				fmt.Fprintf(writer, "[DockerPulse] Container will %s in 2 seconds with updated image.\n", action)
+				fmt.Fprintln(writer, "[DockerPulse] Command completed successfully.")
+				return nil
+			}
+
+			fmt.Fprintf(writer, "[DockerPulse] Detached runner failed (%v: %s), falling back to direct compose\n", err, strings.TrimSpace(string(out)))
+		}
+
+		if action == "pull_up" {
+			pullArgs := append(append([]string{}, baseArgs...), "pull")
+			if err := d.runComposeCmd(ctx, containerPath, pullArgs, writer); err != nil {
+				return err
+			}
+		}
+
+		args := append([]string{}, baseArgs...)
+		if action == "restart" {
+			args = append(args, "restart")
+		} else {
+			args = append(args, "up", "-d")
+		}
+		return d.runComposeCmd(ctx, containerPath, args, writer)
+
+	case "down":
+		args := append(append([]string{}, baseArgs...), "down")
+		return d.runComposeCmd(ctx, containerPath, args, writer)
+
+	case "pull":
+		args := append(append([]string{}, baseArgs...), "pull")
+		return d.runComposeCmd(ctx, containerPath, args, writer)
+
+	default:
+		return fmt.Errorf("unsupported compose action: %s", action)
+	}
+}
+
+var dockerPulseInternalVars = map[string]bool{
+	"PORT":                    true,
+	"DATA_DIR":                true,
+	"JWT_SECRET":              true,
+	"AGENT_SECRET":            true,
+	"HOST_BASE_DIR":           true,
+	"CONTAINER_BASE_DIR":      true,
+	"PROXY_AUTH_HEADER":       true,
+	"PROXY_EMAIL_HEADER":      true,
+	"UPDATE_INTERVAL_MINUTES": true,
+}
+
+func parseEnvFile(p string) map[string]string {
+	res := make(map[string]string)
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return res
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "export ") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+		}
+		idx := strings.Index(line, "=")
+		if idx == -1 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
+
+		if (strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"") && len(val) >= 2) ||
+			(strings.HasPrefix(val, "'") && strings.HasSuffix(val, "'") && len(val) >= 2) {
+			val = val[1 : len(val)-1]
+		} else {
+			if commentIdx := strings.Index(val, " #"); commentIdx != -1 {
+				val = strings.TrimSpace(val[:commentIdx])
+			}
+		}
+
+		if key != "" {
+			res[key] = val
+		}
+	}
+	return res
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func buildComposeEnv(workingDir string) []string {
+	envFile := filepath.Join(workingDir, ".env")
+	userEnv := parseEnvFile(envFile)
+
+	var result []string
+	for _, env := range os.Environ() {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) == 2 {
+			k := parts[0]
+			if dockerPulseInternalVars[k] {
+				if _, ok := userEnv[k]; !ok {
+					continue
+				}
+			}
+			if _, ok := userEnv[k]; ok {
+				continue
+			}
+			result = append(result, env)
+		}
+	}
+
+	for k, v := range userEnv {
+		result = append(result, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	return result
+}
+
+func (d *SocketDriver) runComposeCmd(ctx context.Context, workingDir string, args []string, writer io.Writer) error {
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.Dir = workingDir
+	cmd.Env = buildComposeEnv(workingDir)
+	cmd.Stdout = writer
+	cmd.Stderr = writer
+
+	fmt.Fprintf(writer, "[DockPulse] Running: docker %s\n", strings.Join(args, " "))
+	err := cmd.Run()
+	if err != nil {
+		fmt.Fprintf(writer, "[DockPulse] Command finished with error: %v\n", err)
+	} else {
+		fmt.Fprintln(writer, "[DockPulse] Command completed successfully.")
+	}
+	return err
+}
+
+func findComposeFile(dir string) string {
+	candidates := []string{
+		"docker-compose.yml",
+		"docker-compose.yaml",
+		"compose.yml",
+		"compose.yaml",
+	}
+	for _, c := range candidates {
+		p := filepath.Join(dir, c)
+		if fileExists(p) {
+			return p
+		}
+	}
+	return ""
+}
+
+func fileExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && !info.IsDir()
+}
+
+func dirExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
+}
+
+func expandHomeDir(path string) string {
+	if strings.HasPrefix(path, "~/") || path == "~" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, path[1:])
+		}
+	}
+	return path
+}
+
+var (
+	validComposeNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	topLevelNameRegex     = regexp.MustCompile(`(?m)^name\s*:\s*(.+)$`)
+)
+
+func SanitizeComposeName(raw string) string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.Trim(raw, `"'`)
+	raw = strings.ToLower(raw)
+
+	var b strings.Builder
+	for _, r := range raw {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else if r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else if r == ' ' || r == '.' {
+			if b.Len() > 0 {
+				last := b.String()[b.Len()-1]
+				if last != '-' && last != '_' {
+					b.WriteByte('-')
+				}
+			}
+		}
+	}
+	res := strings.Trim(b.String(), "-_")
+	if res == "" || !((res[0] >= 'a' && res[0] <= 'z') || (res[0] >= '0' && res[0] <= '9')) {
+		return "stack"
+	}
+	return res
+}
+
+func sanitizeComposeName(raw string) string {
+	return SanitizeComposeName(raw)
+}
+
+func getComposeProjectName(composeFile string, hostPath string) string {
+	if composeFile != "" {
+		if data, err := os.ReadFile(composeFile); err == nil {
+			loc := topLevelNameRegex.FindStringSubmatchIndex(string(data))
+			if len(loc) >= 4 {
+				valWithComment := string(data)[loc[2]:loc[3]]
+				val := strings.TrimSpace(strings.Split(valWithComment, "#")[0])
+				val = strings.Trim(val, `"'`)
+				if val != "" {
+					if validComposeNameRegex.MatchString(val) {
+						return val
+					}
+					sanitized := sanitizeComposeName(val)
+					if sanitized != "" {
+						return sanitized
+					}
+				}
+			}
+		}
+	}
+	return sanitizeComposeName(filepath.Base(hostPath))
+}
+
+func sanitizeComposeContent(content string) (newContent string, modified bool, oldName string, newName string) {
+	loc := topLevelNameRegex.FindStringSubmatchIndex(content)
+	if len(loc) < 4 {
+		return content, false, "", ""
+	}
+
+	valWithComment := content[loc[2]:loc[3]]
+	val := strings.TrimSpace(strings.Split(valWithComment, "#")[0])
+	val = strings.Trim(val, `"'`)
+
+	if validComposeNameRegex.MatchString(val) {
+		return content, false, "", ""
+	}
+
+	sanitized := sanitizeComposeName(val)
+	fullMatch := content[loc[0]:loc[1]]
+	lineEnding := ""
+	if strings.HasSuffix(fullMatch, "\r") {
+		lineEnding = "\r"
+	}
+	comment := ""
+	if hashIdx := strings.Index(valWithComment, "#"); hashIdx != -1 {
+		comment = " " + strings.TrimSpace(valWithComment[hashIdx:])
+	}
+	newLine := "name: " + sanitized + comment + lineEnding
+	newContent = content[:loc[0]] + newLine + content[loc[1]:]
+	return newContent, true, val, sanitized
+}
+
+func detectComposeNameIssue(filePath string) (hasIssue bool, oldName string, proposedName string) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return false, "", ""
+	}
+	_, hasIssue, oldName, proposedName = sanitizeComposeContent(string(data))
+	return hasIssue, oldName, proposedName
+}
+

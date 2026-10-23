@@ -92,25 +92,3 @@ type SchedulerConfig struct {
 	LastRun         time.Time `json:"last_run"`
 	NextRun         time.Time `json:"next_run"`
 }
-
-type UpdateCheck struct {
-	ID            string    `json:"id"`
-	HostID        string    `json:"host_id"`
-	StackID       string    `json:"stack_id"`
-	ServiceName   string    `json:"service_name"`
-	ImageName     string    `json:"image_name"`
-	CurrentDigest string    `json:"current_digest"`
-	RemoteDigest  string    `json:"remote_digest"`
-	HasUpdate     bool      `json:"has_update"`
-	LastCheckedAt time.Time `json:"last_checked_at"`
-}
-
-type AuditLog struct {
-	ID        string    `json:"id"`
-	UserID    string    `json:"user_id"`
-	Username  string    `json:"username"`
-	Action    string    `json:"action"`
-	Target    string    `json:"target"`
-	Details   string    `json:"details"`
-	CreatedAt time.Time `json:"created_at"`
-}

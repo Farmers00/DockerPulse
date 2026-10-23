@@ -91,10 +91,6 @@ func (s *Scheduler) loop() {
 	}
 }
 
-func (s *Scheduler) RunCheckSync(ctx context.Context) error {
-	return s.executeCheck(ctx)
-}
-
 func (s *Scheduler) runCheck() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -133,6 +129,7 @@ func (s *Scheduler) executeCheck(ctx context.Context) error {
 		}
 
 		results, err := s.updater.CheckHostContainers(ctx, d, h.ID)
+		_ = d.Close()
 		if err != nil {
 			log.Printf("[Scheduler] Error checking updates for host %s: %v", h.Name, err)
 			continue
